@@ -17,18 +17,14 @@ if not TAVILY_API_KEY:
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def web_search(query: str, max_results: int = 5) -> str:
-    """
-    Search the web and return relevant results.
-    """
-
+def web_search(query: str, max_results: int = 3) -> str:
     response = requests.post(
         "https://api.tavily.com/search",
         json={
             "api_key": TAVILY_API_KEY,
             "query": query,
-            "search_depth": "advanced",
-            "max_results": max_results,
+            "search_depth": "basic",
+            "max_results": 3,
             "include_answer": True,
         },
         timeout=30,
@@ -41,16 +37,21 @@ def web_search(query: str, max_results: int = 5) -> str:
     results = []
 
     if data.get("answer"):
-        results.append(f"Summary:\n{data['answer']}")
+        results.append(
+            f"Search summary:\n{data['answer'][:2000]}"
+        )
 
-    for index, result in enumerate(data.get("results", []), start=1):
+    for index, result in enumerate(
+        data.get("results", [])[:3],
+        start=1,
+    ):
         results.append(
             f"""
 Source {index}
 Title: {result.get("title", "")}
 URL: {result.get("url", "")}
 Content:
-{result.get("content", "")}
+{result.get("content", "")[:2500]}
 """.strip()
         )
 
@@ -58,10 +59,6 @@ Content:
 
 
 def fetch_page(url: str) -> str:
-    """
-    Fetch a webpage and extract readable text.
-    """
-
     response = requests.get(
         url,
         timeout=20,
@@ -74,7 +71,6 @@ def fetch_page(url: str) -> str:
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Remove elements that usually don't contain useful article text.
     for element in soup(
         ["script", "style", "nav", "footer", "header", "aside", "noscript"]
     ):
@@ -90,8 +86,8 @@ def fetch_page(url: str) -> str:
 
     text = "\n".join(lines)
 
-    # Prevent huge webpages from consuming the context window.
-    return text[:15000]
+    # Keep tool output small.
+    return text[:6000]
 
 
 # ---------------------------------------------------------------------------

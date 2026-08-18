@@ -1,4 +1,4 @@
-from .agent import research
+from .agents import research
 
 
 def main():
