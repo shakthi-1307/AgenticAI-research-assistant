@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass, field
 
 from groq import Groq
 
@@ -11,12 +12,20 @@ client = Groq(api_key=GROQ_API_KEY)
 MAX_ITERATIONS = 5
 
 
+@dataclass
+class AgentState:
+    messages: list = field(default_factory=list)
+    iteration: int = 0
+    final_answer: str | None = None
+
+
 def research(question: str) -> str:
 
-    messages = [
-        {
-            "role": "system",
-            "content": """
+    state = AgentState(
+        messages=[
+            {
+                "role": "system",
+                "content": """
 You are an autonomous research assistant.
 
 Your job is to research the user's question and provide
@@ -33,20 +42,23 @@ Rules:
 7. Stop researching once you have enough evidence.
 8. Give a concise final answer with source URLs.
 """,
-        },
-        {
-            "role": "user",
-            "content": question,
-        },
-    ]
+            },
+            {
+                "role": "user",
+                "content": question,
+            },
+        ]
+    )
 
-    for iteration in range(MAX_ITERATIONS):
+    while state.iteration < MAX_ITERATIONS:
 
-        print(f"\n--- Agent iteration {iteration + 1} ---")
+        state.iteration += 1
+
+        print(f"\n--- Agent iteration {state.iteration} ---")
 
         response = client.chat.completions.create(
             model=MODEL,
-            messages=messages,
+            messages=state.messages,
             tools=TOOLS,
             tool_choice="auto",
             max_tokens=1500,
@@ -55,11 +67,12 @@ Rules:
         message = response.choices[0].message
 
         # Add the assistant's response to conversation.
-        messages.append(message)
+        state.messages.append(message)
 
         # No tool call means the agent is finished.
         if not message.tool_calls:
-            return message.content
+            state.final_answer = message.content
+            break
 
         for tool_call in message.tool_calls:
 
@@ -77,7 +90,7 @@ Rules:
                 arguments,
             )
 
-            messages.append(
+            state.messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -86,8 +99,10 @@ Rules:
                 }
             )
 
+    if state.final_answer:
+        return state.final_answer
+
     return (
         "I could not complete the research within "
         "the maximum number of research steps."
     )
-
