@@ -1,121 +1,84 @@
-import os
-from typing import Any
-
 import requests
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-
-load_dotenv()
-
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-
-if not TAVILY_API_KEY:
-    raise ValueError("TAVILY_API_KEY is not set.")
 
 
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
+REQUEST_TIMEOUT = 10
 
-def web_search(query: str, max_results: int = 3) -> str:
-    response = requests.post(
-        "https://api.tavily.com/search",
-        json={
-            "api_key": TAVILY_API_KEY,
-            "query": query,
-            "search_depth": "basic",
-            "max_results": 3,
-            "include_answer": True,
-        },
-        timeout=30,
-    )
 
-    response.raise_for_status()
+def web_search(query: str):
+    """
+    Search the web for information.
+    """
 
-    data = response.json()
+    try:
 
-    results = []
-
-    if data.get("answer"):
-        results.append(
-            f"Search summary:\n{data['answer'][:2000]}"
+        response = requests.get(
+            "https://www.google.com/search",
+            params={
+                "q": query
+            },
+            timeout=REQUEST_TIMEOUT,
         )
 
-    for index, result in enumerate(
-        data.get("results", [])[:3],
-        start=1,
-    ):
-        results.append(
-            f"""
-Source {index}
-Title: {result.get("title", "")}
-URL: {result.get("url", "")}
-Content:
-{result.get("content", "")[:2500]}
-""".strip()
+        response.raise_for_status()
+
+        return response.text
+
+    except requests.Timeout:
+
+        return (
+            "The web search timed out. "
+            "Please try again with a simpler query."
         )
 
-    return "\n\n".join(results)
+    except requests.RequestException as error:
+
+        return (
+            f"Web search failed: {str(error)}"
+        )
 
 
-def fetch_page(url: str) -> str:
-    response = requests.get(
-        url,
-        timeout=20,
-        headers={
-            "User-Agent": "Mozilla/5.0 ResearchAgent/1.0"
-        },
-    )
+def fetch_page(url: str):
+    """
+    Fetch the contents of a webpage.
+    """
 
-    response.raise_for_status()
+    try:
 
-    soup = BeautifulSoup(response.text, "html.parser")
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+        )
 
-    for element in soup(
-        ["script", "style", "nav", "footer", "header", "aside", "noscript"]
-    ):
-        element.decompose()
+        response.raise_for_status()
 
-    text = soup.get_text(separator="\n")
+        return response.text
 
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip()
-    ]
+    except requests.Timeout:
 
-    text = "\n".join(lines)
+        return (
+            "Fetching the webpage timed out."
+        )
 
-    # Keep tool output small.
-    return text[:6000]
+    except requests.RequestException as error:
 
+        return (
+            f"Failed to fetch webpage: {str(error)}"
+        )
 
-# ---------------------------------------------------------------------------
-# Groq tool definitions
-# ---------------------------------------------------------------------------
 
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": (
-                "Search the web for current information. "
-                "Use this when you need factual information, "
-                "recent events, research, or multiple sources."
-            ),
+            "description": "Search the web for information.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
                         "description": "The search query.",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of search results.",
-                        "default": 5,
-                    },
+                    }
                 },
                 "required": ["query"],
             },
@@ -125,17 +88,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fetch_page",
-            "description": (
-                "Fetch and read a webpage. "
-                "Use this when you need detailed information "
-                "from a specific URL."
-            ),
+            "description": "Fetch the contents of a webpage.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "The URL of the webpage to read.",
+                        "description": "The webpage URL.",
                     }
                 },
                 "required": ["url"],
@@ -145,34 +104,16 @@ TOOLS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Tool dispatcher
-# ---------------------------------------------------------------------------
+def execute_tool(name: str, arguments: dict):
 
-TOOL_MAP = {
-    "web_search": web_search,
-    "fetch_page": fetch_page,
-}
+    if name == "web_search":
+        return web_search(
+            arguments["query"]
+        )
 
+    if name == "fetch_page":
+        return fetch_page(
+            arguments["url"]
+        )
 
-def execute_tool(name: str, arguments: dict[str, Any]) -> str:
-    """
-    Execute a tool requested by the LLM.
-    """
-
-    tool = TOOL_MAP.get(name)
-
-    if tool is None:
-        return f"Error: unknown tool '{name}'."
-
-    try:
-        result = tool(**arguments)
-
-        return str(result)
-
-    except requests.RequestException as exc:
-        return f"Tool '{name}' failed: {exc}"
-
-    except Exception as exc:
-        return f"Tool '{name}' failed: {exc}"
-
+    return f"Unknown tool: {name}"

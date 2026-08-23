@@ -35,10 +35,7 @@ def execute_tool_with_retry(name,arguments):
                 f"(attempt {attempt + 1})"
             )
             
-            result = execute_tool(
-                name,
-                arguments
-            )
+            result = execute_tool(name,arguments)
             
             return result
         
