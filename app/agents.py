@@ -1,26 +1,54 @@
 import json
-from dataclasses import dataclass, field
-
+from dataclass import dataclass, field 
 from groq import Groq
-
 from .config import GROQ_API_KEY, MODEL
 from .tools import TOOLS, execute_tool
-
 
 client = Groq(api_key=GROQ_API_KEY)
 
 MAX_ITERATIONS = 5
 
-
 @dataclass
 class AgentState:
-    messages: list = field(default_factory=list)
-    iteration: int = 0
-    final_answer: str | None = None
+    messages:list = field(default_factory=list)
+    iteration:int = 0 
+    final_answer:str | None = None
+    
+def call_llm(messages):
+    response = client.chat.completions.create(
+        model = MODEL,
+        messages = messages,
+        tools = TOOLS,
+        tool_choice = "auto",
+        max_tokens = 1500,
+    )
+    
+    return response.choice[0].message
 
 
-def research(question: str) -> str:
-
+def execute_tools(message,state):
+    for tool_call in message.tool_calls:
+        name = tool_call.function.name
+        arguments = json.loads(tool_call.function.arguments)
+        
+        print(f"Tool : {name}")
+        print(f"Arguments : {arguments}")
+        
+        result = execute_tool(
+            name,
+            arguments
+        )
+        
+        state.messages.append(
+            {
+                "role":"tool",
+                "tool_call_id":tool_call.id,
+                "name":name,
+                "content":result,
+            }
+        )
+        
+def research(question:str) -> str:
     state = AgentState(
         messages=[
             {
@@ -49,59 +77,25 @@ Rules:
             },
         ]
     )
-
+    
     while state.iteration < MAX_ITERATIONS:
-
-        state.iteration += 1
-
-        print(f"\n--- Agent iteration {state.iteration} ---")
-
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=state.messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            max_tokens=1500,
-        )
-
-        message = response.choices[0].message
-
-        # Add the assistant's response to conversation.
+        state.iteration += 1 
+        
+        print(f"n---Agent iteration {state.iteration}---")
+        
+        message = call_llm(state.messages)
+        
         state.messages.append(message)
-
-        # No tool call means the agent is finished.
+        
         if not message.tool_calls:
             state.final_answer = message.content
             break
-
-        for tool_call in message.tool_calls:
-
-            name = tool_call.function.name
-
-            arguments = json.loads(
-                tool_call.function.arguments
-            )
-
-            print(f"Tool: {name}")
-            print(f"Arguments: {arguments}")
-
-            result = execute_tool(
-                name,
-                arguments,
-            )
-
-            state.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": name,
-                    "content": result,
-                }
-            )
-
+        
+        execute_tools(message,state)
+        
     if state.final_answer:
         return state.final_answer
-
+    
     return (
         "I could not complete the research within "
         "the maximum number of research steps."
