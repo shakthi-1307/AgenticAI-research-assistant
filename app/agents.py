@@ -1,5 +1,6 @@
 import json
-from dataclass import dataclass, field 
+import time
+from dataclasses import dataclass, field 
 from groq import Groq
 from .config import GROQ_API_KEY, MODEL
 from .tools import TOOLS, execute_tool
@@ -7,6 +8,7 @@ from .tools import TOOLS, execute_tool
 client = Groq(api_key=GROQ_API_KEY)
 
 MAX_ITERATIONS = 5
+MAX_TOOL_RETRIES = 2 
 
 @dataclass
 class AgentState:
@@ -23,21 +25,61 @@ def call_llm(messages):
         max_tokens = 1500,
     )
     
-    return response.choice[0].message
+    return response.choices[0].message
 
-
+def execute_tool_with_retry(name,arguments):
+    for attempt in range(MAX_TOOL_RETRIES+1):
+        try:
+            print(
+                f"Executing {name}"
+                f"(attempt {attempt + 1})"
+            )
+            
+            result = execute_tool(
+                name,
+                arguments
+            )
+            
+            return result
+        
+        except Exception as error:
+            print(
+                f"Tool '{name}' failed : {error}"
+            )
+            
+            if attempt == MAX_TOOL_RETRIES:
+                return (
+                    f"Tool '{name}' failed after"
+                    f"{MAX_TOOL_RETRIES + 1} attempts."
+                    f"Error: {str(error)}"
+                )
+            
+            time.sleep(1)
+            
 def execute_tools(message,state):
+
     for tool_call in message.tool_calls:
+        
         name = tool_call.function.name
-        arguments = json.loads(tool_call.function.arguments)
         
-        print(f"Tool : {name}")
-        print(f"Arguments : {arguments}")
-        
-        result = execute_tool(
-            name,
-            arguments
-        )
+        try:
+            arguments = json.loads(tool_call.function.arguments)
+            
+            print(f"Tool : {name}")
+            print(f"Arguments : {arguments}")
+            
+            result = execute_tool_with_retry(
+                name,
+                arguments
+            )
+            
+        except Exception as error:
+            print(f"Tool errror : {error}")
+            
+            result = (
+                f"Tool '{name}' failed to execute. "
+                f"Error : {str(error)}"
+            )
         
         state.messages.append(
             {
