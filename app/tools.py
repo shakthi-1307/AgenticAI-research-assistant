@@ -1,3 +1,4 @@
+import asyncio
 import requests
 
 
@@ -6,7 +7,7 @@ REQUEST_TIMEOUT = 10
 
 def web_search(query: str):
     """
-    Search the web for information.
+    Synchronous web search.
     """
 
     try:
@@ -37,9 +38,20 @@ def web_search(query: str):
         )
 
 
+async def web_search_async(query: str):
+    """
+    Async wrapper around the synchronous web search.
+    """
+
+    return await asyncio.to_thread(
+        web_search,
+        query,
+    )
+
+
 def fetch_page(url: str):
     """
-    Fetch the contents of a webpage.
+    Synchronous webpage fetch.
     """
 
     try:
@@ -64,6 +76,17 @@ def fetch_page(url: str):
         return (
             f"Failed to fetch webpage: {str(error)}"
         )
+
+
+async def fetch_page_async(url: str):
+    """
+    Async wrapper around the synchronous webpage fetch.
+    """
+
+    return await asyncio.to_thread(
+        fetch_page,
+        url,
+    )
 
 
 TOOLS = [
@@ -113,6 +136,24 @@ def execute_tool(name: str, arguments: dict):
 
     if name == "fetch_page":
         return fetch_page(
+            arguments["url"]
+        )
+
+    return f"Unknown tool: {name}"
+
+
+async def execute_tool_async(
+    name: str,
+    arguments: dict,
+):
+
+    if name == "web_search":
+        return await web_search_async(
+            arguments["query"]
+        )
+
+    if name == "fetch_page":
+        return await fetch_page_async(
             arguments["url"]
         )
 
