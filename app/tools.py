@@ -1,13 +1,14 @@
-import asyncio
 import requests
+from bs4 import BeautifulSoup
 
 
 REQUEST_TIMEOUT = 10
+MAX_SEARCH_RESULTS = 5
 
 
 def web_search(query: str):
     """
-    Synchronous web search.
+    Search the web and return useful search results.
     """
 
     try:
@@ -16,6 +17,99 @@ def web_search(query: str):
             "https://www.google.com/search",
             params={
                 "q": query
+            },
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/151.0 Safari/537.36"
+                )
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        results = []
+
+        for result in soup.select("div.MjjYud"):
+
+            link = result.select_one("a")
+            title = result.select_one("h3")
+
+            if not link or not title:
+                continue
+
+            url = link.get("href")
+
+            snippet_element = result.select_one(
+                ".VwiC3b"
+            )
+
+            snippet = (
+                snippet_element.get_text(
+                    " ",
+                    strip=True
+                )
+                if snippet_element
+                else ""
+            )
+
+            results.append(
+                {
+                    "title": title.get_text(
+                        " ",
+                        strip=True
+                    ),
+                    "url": url,
+                    "snippet": snippet,
+                }
+            )
+
+            if len(results) >= MAX_SEARCH_RESULTS:
+                break
+
+        return results
+
+    except requests.Timeout:
+
+        return {
+            "error": "The web search timed out."
+        }
+
+    except requests.RequestException as error:
+
+        return {
+            "error": (
+                f"Web search failed: {str(error)}"
+            )
+        }
+
+
+def fetch_page(url: str):
+    """
+    Fetch a webpage.
+    """
+
+    try:
+
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/151.0 Safari/537.36"
+                )
             },
             timeout=REQUEST_TIMEOUT,
         )
@@ -26,70 +120,122 @@ def web_search(query: str):
 
     except requests.Timeout:
 
-        return (
-            "The web search timed out. "
-            "Please try again with a simpler query."
-        )
+        return {
+            "error": "Fetching the webpage timed out."
+        }
 
     except requests.RequestException as error:
 
-        return (
-            f"Web search failed: {str(error)}"
-        )
+        return {
+            "error": (
+                f"Failed to fetch webpage: {str(error)}"
+            )
+        }
 
 
-async def web_search_async(query: str):
+def calculator(expression: str):
     """
-    Async wrapper around the synchronous web search.
+    Calculate a basic mathematical expression.
     """
 
-    return await asyncio.to_thread(
-        web_search,
-        query,
+    allowed_characters = (
+        "0123456789+-*/(). "
     )
 
+    if any(
+        character not in allowed_characters
+        for character in expression
+    ):
+        return {
+            "error": "Invalid mathematical expression."
+        }
 
-def fetch_page(url: str):
+    try:
+
+        result = eval(
+            expression,
+            {
+                "__builtins__": {}
+            },
+            {}
+        )
+
+        return {
+            "expression": expression,
+            "result": result,
+        }
+
+    except Exception as error:
+
+        return {
+            "error": (
+                f"Could not calculate expression: "
+                f"{str(error)}"
+            )
+        }
+
+
+def get_weather(city: str):
     """
-    Synchronous webpage fetch.
+    Get current weather information for a city.
+
+    This uses wttr.in as a simple weather API.
     """
 
     try:
 
         response = requests.get(
-            url,
+            f"https://wttr.in/{city}",
+            params={
+                "format": "j1"
+            },
             timeout=REQUEST_TIMEOUT,
         )
 
         response.raise_for_status()
 
-        return response.text
+        data = response.json()
+
+        current = data["current_condition"][0]
+
+        return {
+            "city": city,
+            "temperature_c": current["temp_C"],
+            "feels_like_c": current["FeelsLikeC"],
+            "humidity": current["humidity"],
+            "condition": current[
+                "weatherDesc"
+            ][0]["value"],
+            "wind_speed_kmh": current[
+                "windspeedKmph"
+            ],
+        }
 
     except requests.Timeout:
 
-        return (
-            "Fetching the webpage timed out."
-        )
+        return {
+            "error": (
+                "Weather request timed out."
+            )
+        }
 
-    except requests.RequestException as error:
+    except (
+        requests.RequestException,
+        KeyError,
+        IndexError,
+        ValueError,
+    ) as error:
 
-        return (
-            f"Failed to fetch webpage: {str(error)}"
-        )
-
-
-async def fetch_page_async(url: str):
-    """
-    Async wrapper around the synchronous webpage fetch.
-    """
-
-    return await asyncio.to_thread(
-        fetch_page,
-        url,
-    )
+        return {
+            "error": (
+                f"Could not retrieve weather: "
+                f"{str(error)}"
+            )
+        }
 
 
 TOOLS = [
+
     {
         "type": "function",
         "function": {
@@ -107,6 +253,7 @@ TOOLS = [
             },
         },
     },
+
     {
         "type": "function",
         "function": {
@@ -124,37 +271,84 @@ TOOLS = [
             },
         },
     },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "calculator",
+            "description": (
+                "Perform basic mathematical calculations."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": (
+                            "A mathematical expression "
+                            "such as '10 * 25'."
+                        ),
+                    }
+                },
+                "required": ["expression"],
+            },
+        },
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": (
+                "Get current weather information "
+                "for a city."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": (
+                            "The city to get weather for."
+                        ),
+                    }
+                },
+                "required": ["city"],
+            },
+        },
+    },
 ]
 
 
-def execute_tool(name: str, arguments: dict):
+def execute_tool(
+    name: str,
+    arguments: dict
+):
 
     if name == "web_search":
+
         return web_search(
             arguments["query"]
         )
 
     if name == "fetch_page":
+
         return fetch_page(
             arguments["url"]
         )
 
-    return f"Unknown tool: {name}"
+    if name == "calculator":
 
-
-async def execute_tool_async(
-    name: str,
-    arguments: dict,
-):
-
-    if name == "web_search":
-        return await web_search_async(
-            arguments["query"]
+        return calculator(
+            arguments["expression"]
         )
 
-    if name == "fetch_page":
-        return await fetch_page_async(
-            arguments["url"]
+    if name == "get_weather":
+
+        return get_weather(
+            arguments["city"]
         )
 
-    return f"Unknown tool: {name}"
+    return {
+        "error": f"Unknown tool: {name}"
+    }
