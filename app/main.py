@@ -1,17 +1,21 @@
+import asyncio
+
 from .agents import research
 
 
 def main():
-    question = input("Research question: ").strip()
 
-    if not question:
-        return
+    question = input(
+        "Research question: "
+    )
 
     print("\nResearching...\n")
 
-    answer = research(question)
+    answer = asyncio.run(
+        research(question)
+    )
 
-    print(answer)
+    print("\n" + answer)
 
 
 if __name__ == "__main__":

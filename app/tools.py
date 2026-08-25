@@ -1,3 +1,5 @@
+import asyncio
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -178,8 +180,6 @@ def calculator(expression: str):
 def get_weather(city: str):
     """
     Get current weather information for a city.
-
-    This uses wttr.in as a simple weather API.
     """
 
     try:
@@ -214,9 +214,7 @@ def get_weather(city: str):
     except requests.Timeout:
 
         return {
-            "error": (
-                "Weather request timed out."
-            )
+            "error": "Weather request timed out."
         }
 
     except (
@@ -235,7 +233,6 @@ def get_weather(city: str):
 
 
 TOOLS = [
-
     {
         "type": "function",
         "function": {
@@ -326,25 +323,21 @@ def execute_tool(
 ):
 
     if name == "web_search":
-
         return web_search(
             arguments["query"]
         )
 
     if name == "fetch_page":
-
         return fetch_page(
             arguments["url"]
         )
 
     if name == "calculator":
-
         return calculator(
             arguments["expression"]
         )
 
     if name == "get_weather":
-
         return get_weather(
             arguments["city"]
         )
@@ -352,3 +345,18 @@ def execute_tool(
     return {
         "error": f"Unknown tool: {name}"
     }
+
+
+async def execute_tool_async(
+    name: str,
+    arguments: dict
+):
+    """
+    Run the blocking tool in a separate thread.
+    """
+
+    return await asyncio.to_thread(
+        execute_tool,
+        name,
+        arguments,
+    )
