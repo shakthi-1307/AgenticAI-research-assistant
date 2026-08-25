@@ -22,24 +22,61 @@ MAX_ITERATIONS = 5
 @dataclass
 class AgentState:
 
+    # What the LLM sees as conversation/context
     messages: list = field(
         default_factory=list
     )
 
-    iteration: int = 0
-
+    # What the planner/runtime tracks
     plan: list = field(
         default_factory=list
     )
 
+    # Working memory
     results: list = field(
         default_factory=list
     )
 
+    # Runtime metadata
+    iteration: int = 0
+
+    # Final response
     final_answer: str | None = None
 
 
+def save_result(
+    state,
+    result,
+):
+    """
+    Store a completed task result
+    in working memory.
+    """
+
+    state.results.append(
+        {
+            "task": result["task"]["task"],
+            "type": result["task"]["type"],
+            "result": result["result"],
+        }
+    )
+
+
+def get_working_memory(state):
+
+    """
+    Return the information collected
+    during the current agent run.
+    """
+
+    return state.results
+
+
 def build_final_answer(state):
+
+    working_memory = get_working_memory(
+        state
+    )
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -48,11 +85,16 @@ def build_final_answer(state):
                 "role": "system",
                 "content": """
 Answer the user's question using the
-completed task results.
+working memory collected by the agent.
 
-Be concise and factual.
+The working memory contains the results
+of completed tasks.
 
 Do not call tools.
+
+Do not invent information.
+
+Be concise and factual.
 """,
             },
             {
@@ -63,7 +105,9 @@ Do not call tools.
                             state.messages[0]
                             ["content"]
                         ),
-                        "results": state.results,
+                        "working_memory": (
+                            working_memory
+                        ),
                     },
                     indent=2,
                 ),
@@ -88,7 +132,7 @@ async def research(question: str):
     )
 
     # -----------------------------------------
-    # PLAN
+    # 1. PLAN
     # -----------------------------------------
 
     state.plan = create_plan(
@@ -109,7 +153,7 @@ async def research(question: str):
         )
 
     # -----------------------------------------
-    # EXECUTION LOOP
+    # 2. EXECUTION LOOP
     # -----------------------------------------
 
     while (
@@ -133,7 +177,7 @@ async def research(question: str):
             break
 
         # -------------------------------------
-        # PARALLEL EXECUTION
+        # 3. EXECUTE READY TASKS
         # -------------------------------------
 
         results = await execute_ready_tasks(
@@ -141,7 +185,7 @@ async def research(question: str):
         )
 
         # -------------------------------------
-        # SAVE RESULTS
+        # 4. SAVE TO WORKING MEMORY
         # -------------------------------------
 
         for item in results:
@@ -149,21 +193,54 @@ async def research(question: str):
             task = item["task"]
             result = item["result"]
 
-            if (
-                isinstance(result, dict)
-                and result.get("status") == "complete"
-            ):
-                task["status"] = "complete"
+            if task["type"] == "research":
+
+                if (
+                    isinstance(result, dict)
+                    and result.get(
+                        "status"
+                    ) == "complete"
+                ):
+                    task["status"] = (
+                        "complete"
+                    )
+                else:
+                    task["status"] = "failed"
 
             else:
-                task["status"] = "failed"
 
-            state.results.append(
+                if (
+                    isinstance(result, dict)
+                    and "error" not in result
+                ):
+                    task["status"] = (
+                        "complete"
+                    )
+                else:
+                    task["status"] = "failed"
+
+            save_result(
+                state,
                 item
             )
 
         # -------------------------------------
-        # SHOW STATE
+        # 5. SHOW WORKING MEMORY
+        # -------------------------------------
+
+        print(
+            "\nWorking memory:"
+        )
+
+        print(
+            json.dumps(
+                state.results,
+                indent=2
+            )
+        )
+
+        # -------------------------------------
+        # 6. SHOW PLAN
         # -------------------------------------
 
         print("\nUpdated plan:")
@@ -180,7 +257,7 @@ async def research(question: str):
             )
 
         # -------------------------------------
-        # DONE?
+        # 7. COMPLETION
         # -------------------------------------
 
         if all_tasks_complete(
@@ -194,7 +271,7 @@ async def research(question: str):
             break
 
     # -----------------------------------------
-    # FINAL ANSWER
+    # 8. FINAL ANSWER
     # -----------------------------------------
 
     if all_tasks_complete(

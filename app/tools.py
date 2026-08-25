@@ -1,100 +1,61 @@
 import asyncio
-
+import json
 import requests
 from bs4 import BeautifulSoup
+from tavily import TavilyClient
 
-
+from .config import TAVILY_API_KEY
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 REQUEST_TIMEOUT = 10
 MAX_SEARCH_RESULTS = 5
 
 
 def web_search(query: str):
-    """
-    Search the web and return useful search results.
-    """
 
     try:
 
-        response = requests.get(
-            "https://www.google.com/search",
-            params={
-                "q": query
-            },
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/151.0 Safari/537.36"
-                )
-            },
-            timeout=REQUEST_TIMEOUT,
+        print(
+            f"Web search: {query}"
         )
 
-        response.raise_for_status()
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
+        response = tavily_client.search(
+            query=query,
+            search_depth="basic",
+            max_results=5,
         )
 
-        results = []
+        results = response.get(
+            "results",
+            []
+        )
 
-        for result in soup.select("div.MjjYud"):
+        return [
+            {
+                "title": item.get(
+                    "title",
+                    ""
+                ),
+                "url": item.get(
+                    "url",
+                    ""
+                ),
+                "snippet": item.get(
+                    "content",
+                    ""
+                ),
+            }
+            for item in results
+        ]
 
-            link = result.select_one("a")
-            title = result.select_one("h3")
-
-            if not link or not title:
-                continue
-
-            url = link.get("href")
-
-            snippet_element = result.select_one(
-                ".VwiC3b"
-            )
-
-            snippet = (
-                snippet_element.get_text(
-                    " ",
-                    strip=True
-                )
-                if snippet_element
-                else ""
-            )
-
-            results.append(
-                {
-                    "title": title.get_text(
-                        " ",
-                        strip=True
-                    ),
-                    "url": url,
-                    "snippet": snippet,
-                }
-            )
-
-            if len(results) >= MAX_SEARCH_RESULTS:
-                break
-
-        return results
-
-    except requests.Timeout:
-
-        return {
-            "error": "The web search timed out."
-        }
-
-    except requests.RequestException as error:
+    except Exception as error:
 
         return {
             "error": (
-                f"Web search failed: {str(error)}"
+                f"Web search failed: "
+                f"{error}"
             )
         }
-
-
+    
 def fetch_page(url: str):
     """
     Fetch a webpage.
@@ -359,4 +320,17 @@ async def execute_tool_async(
         execute_tool,
         name,
         arguments,
+    )
+    
+if __name__ == "__main__":
+
+    results = web_search(
+        "what is artificial intelligence"
+    )
+
+    print(
+        json.dumps(
+            results,
+            indent=2
+        )
     )

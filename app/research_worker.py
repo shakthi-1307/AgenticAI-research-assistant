@@ -3,13 +3,12 @@ import json
 from groq import Groq
 
 from .config import GROQ_API_KEY, MODEL
-from .tools import TOOLS
+from .tools import TOOLS, execute_tool
 
 
 client = Groq(
     api_key=GROQ_API_KEY
 )
-
 
 MAX_RESEARCH_STEPS = 3
 
@@ -22,29 +21,45 @@ def research_task(task):
             "content": """
 You are a research worker.
 
-Your job is to complete ONE research task.
+Your job is to answer ONE research question.
 
-Use web_search when external information
-is required.
+You have two possible actions:
 
-Use fetch_page when you need more detail
-from a source.
+1. SEARCH
+   Use web_search to find information.
 
-Do not perform unrelated tasks.
+2. FINISH
+   Provide the final answer when enough
+   evidence has been collected.
 
-Stop once you have enough information.
+IMPORTANT RULES:
 
-Return a concise factual result.
+- Start with web_search for factual questions.
+- After receiving search results, inspect them.
+- If the results are sufficient to answer,
+  FINISH immediately.
+- Do not perform another search if the existing
+  results already contain the answer.
+- Never repeat the same search query.
+- Do not search just because another iteration
+  is available.
+- For simple questions, one search is normally
+  enough.
+
+When you finish, give a concise answer based
+only on the gathered information.
 """,
         },
         {
             "role": "user",
             "content": (
-                "Research task:\n"
+                "Research question:\n"
                 + task["task"]
             ),
         },
     ]
+
+    previous_queries = set()
 
     for step in range(
         MAX_RESEARCH_STEPS
@@ -60,15 +75,13 @@ Return a concise factual result.
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
-            max_tokens=1200,
+            max_tokens=1000,
         )
 
         message = response.choices[0].message
 
-        messages.append(message)
-
         # -------------------------------------
-        # Worker finished
+        # FINISHED
         # -------------------------------------
 
         if not message.tool_calls:
@@ -78,8 +91,10 @@ Return a concise factual result.
                 "answer": message.content,
             }
 
+        messages.append(message)
+
         # -------------------------------------
-        # Execute worker tools
+        # EXECUTE TOOL CALLS
         # -------------------------------------
 
         for tool_call in message.tool_calls:
@@ -90,19 +105,54 @@ Return a concise factual result.
                 tool_call.function.arguments
             )
 
+            # ---------------------------------
+            # Prevent repeated searches
+            # ---------------------------------
+
+            if name == "web_search":
+
+                query = arguments["query"]
+
+                if query in previous_queries:
+
+                    print(
+                        "Repeated search detected."
+                    )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": (
+                                tool_call.id
+                            ),
+                            "name": name,
+                            "content": (
+                                "This search query "
+                                "was already executed. "
+                                "Do not repeat it. "
+                                "Use the existing results "
+                                "and finish the task."
+                            ),
+                        }
+                    )
+
+                    continue
+
+                previous_queries.add(query)
+
             print(
                 f"Research worker tool: "
                 f"{name}"
             )
 
-            # Import here to keep the worker
-            # independent from the main executor.
-            from .tools import execute_tool
-
             result = execute_tool(
                 name,
                 arguments
             )
+            
+            print("\n--- TOOL RESULT ---")
+            print(json.dumps(result, indent=2)[:5000])
+            print("--- END TOOL RESULT ---\n")
 
             messages.append(
                 {
@@ -117,10 +167,15 @@ Return a concise factual result.
                 }
             )
 
+    # -----------------------------------------
+    # MAX STEPS
+    # -----------------------------------------
+
     return {
         "status": "failed",
         "answer": (
-            "Research worker reached "
-            "its maximum steps."
+            "Research worker could not "
+            "complete the task within "
+            "the allowed number of steps."
         ),
     }
