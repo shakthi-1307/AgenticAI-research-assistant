@@ -147,8 +147,16 @@ async def research(question: str):
         for item in results:
 
             task = item["task"]
+            result = item["result"]
 
-            task["status"] = "complete"
+            if (
+                isinstance(result, dict)
+                and result.get("status") == "complete"
+            ):
+                task["status"] = "complete"
+
+            else:
+                task["status"] = "failed"
 
             state.results.append(
                 item

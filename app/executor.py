@@ -1,5 +1,7 @@
 import asyncio
 
+from .research_worker import research_task
+
 
 MAX_TOOL_RETRIES = 2
 
@@ -29,6 +31,7 @@ async def execute_tool_with_retry(
             )
 
             if attempt == MAX_TOOL_RETRIES:
+
                 return {
                     "error": str(error)
                 }
@@ -38,11 +41,11 @@ async def execute_tool_with_retry(
 
 async def execute_task(task):
 
-    """
-    Execute one planned task.
-    """
-
     task_type = task["type"]
+
+    # -----------------------------------------
+    # WEATHER
+    # -----------------------------------------
 
     if task_type == "weather":
 
@@ -65,6 +68,10 @@ async def execute_task(task):
             "result": result,
         }
 
+    # -----------------------------------------
+    # CALCULATION
+    # -----------------------------------------
+
     if task_type == "calculation":
 
         from .tools import calculator
@@ -85,6 +92,31 @@ async def execute_task(task):
             "task": task,
             "result": result,
         }
+
+    # -----------------------------------------
+    # RESEARCH
+    # -----------------------------------------
+
+    if task_type == "research":
+
+        print(
+            f"Executing research task: "
+            f"{task['task']}"
+        )
+
+        result = await asyncio.to_thread(
+            research_task,
+            task,
+        )
+
+        return {
+            "task": task,
+            "result": result,
+        }
+
+    # -----------------------------------------
+    # UNKNOWN
+    # -----------------------------------------
 
     return {
         "task": task,
@@ -112,8 +144,6 @@ async def execute_ready_tasks(
         for task in ready_tasks
     ]
 
-    results = await asyncio.gather(
+    return await asyncio.gather(
         *tasks
     )
-
-    return results

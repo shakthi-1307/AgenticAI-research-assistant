@@ -29,10 +29,25 @@ For every task identify:
 
 Supported task types:
 
+research
 weather
 calculation
-web_search
-fetch_page
+
+Use:
+
+research
+for questions requiring general knowledge
+or web research.
+
+Use:
+
+weather
+for current weather.
+
+Use:
+
+calculation
+for mathematical calculations.
 
 Return ONLY valid JSON.
 
@@ -41,15 +56,14 @@ Example:
 {
     "tasks": [
         {
-            "task": "Find current weather in Chennai",
-            "type": "weather",
-            "city": "Chennai",
+            "task": "Research what artificial intelligence is",
+            "type": "research",
             "depends_on": []
         },
         {
-            "task": "Calculate 1 multiplied by 50393",
+            "task": "Calculate 2 multiplied by 3",
             "type": "calculation",
-            "expression": "1 * 50393",
+            "expression": "2 * 3",
             "depends_on": []
         }
     ]
