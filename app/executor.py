@@ -1,30 +1,11 @@
 import asyncio
-import json
-
-from .tools import execute_tool_async
 
 
 MAX_TOOL_RETRIES = 2
-MAX_TOOL_RESULT_CHARS = 12000
-
-
-def limit_tool_result(result):
-
-    if not isinstance(result, str):
-        result = str(result)
-
-    if len(result) <= MAX_TOOL_RESULT_CHARS:
-        return result
-
-    return (
-        result[:MAX_TOOL_RESULT_CHARS]
-        + "\n\n"
-        "[Tool result truncated because it was too large.]"
-    )
 
 
 async def execute_tool_with_retry(
-    name,
+    tool_function,
     arguments,
 ):
 
@@ -34,90 +15,105 @@ async def execute_tool_with_retry(
 
         try:
 
-            print(
-                f"Executing {name} "
-                f"(attempt {attempt + 1})"
-            )
-
-            result = await execute_tool_async(
-                name,
-                arguments,
-            )
-
-            return limit_tool_result(
-                result
+            return await asyncio.to_thread(
+                tool_function,
+                **arguments,
             )
 
         except Exception as error:
 
             print(
-                f"Tool '{name}' failed: {error}"
+                f"Tool failed "
+                f"(attempt {attempt + 1}): "
+                f"{error}"
             )
 
             if attempt == MAX_TOOL_RETRIES:
-
                 return {
-                    "error": (
-                        f"Tool '{name}' failed after "
-                        f"{MAX_TOOL_RETRIES + 1} attempts."
-                    )
+                    "error": str(error)
                 }
 
             await asyncio.sleep(1)
 
 
-async def execute_tool_call(
-    tool_call
-):
+async def execute_task(task):
 
-    name = tool_call.function.name
+    """
+    Execute one planned task.
+    """
 
-    try:
+    task_type = task["type"]
 
-        arguments = json.loads(
-            tool_call.function.arguments
+    if task_type == "weather":
+
+        from .tools import get_weather
+
+        print(
+            f"Executing weather task: "
+            f"{task['city']}"
         )
-
-        print(f"Tool: {name}")
-        print(f"Arguments: {arguments}")
 
         result = await execute_tool_with_retry(
-            name,
-            arguments,
+            get_weather,
+            {
+                "city": task["city"]
+            },
         )
 
-    except Exception as error:
+        return {
+            "task": task,
+            "result": result,
+        }
 
-        arguments = {}
+    if task_type == "calculation":
 
-        result = {
-            "error": str(error)
+        from .tools import calculator
+
+        print(
+            f"Executing calculation: "
+            f"{task['expression']}"
+        )
+
+        result = await execute_tool_with_retry(
+            calculator,
+            {
+                "expression": task["expression"]
+            },
+        )
+
+        return {
+            "task": task,
+            "result": result,
         }
 
     return {
-        "tool_call": tool_call,
-        "name": name,
-        "arguments": arguments,
-        "result": result,
+        "task": task,
+        "result": {
+            "error": (
+                f"Unknown task type: "
+                f"{task_type}"
+            )
+        },
     }
 
 
-async def execute_tool_calls(
-    tool_calls
+async def execute_ready_tasks(
+    ready_tasks,
 ):
 
-    """
-    Execute multiple independent tool calls
-    concurrently.
-    """
+    print(
+        f"\nExecuting "
+        f"{len(ready_tasks)} "
+        f"ready tasks in parallel."
+    )
 
     tasks = [
-        execute_tool_call(
-            tool_call
-        )
-        for tool_call in tool_calls
+        execute_task(task)
+        for task in ready_tasks
     ]
 
-    return await asyncio.gather(
+    results = await asyncio.gather(
         *tasks
     )
+
+    return results

@@ -5,7 +5,9 @@ from groq import Groq
 from .config import GROQ_API_KEY, MODEL
 
 
-client = Groq(api_key=GROQ_API_KEY)
+client = Groq(
+    api_key=GROQ_API_KEY
+)
 
 
 def create_plan(question: str):
@@ -16,40 +18,39 @@ def create_plan(question: str):
             {
                 "role": "system",
                 "content": """
-Break the user's request into the smallest
-number of concrete tasks required to answer it.
+Break the user's request into concrete tasks.
 
-Also identify dependencies.
+For every task identify:
 
-A task depends on another task when it needs
-the result of that task.
+- task
+- type
+- required arguments
+- dependencies
+
+Supported task types:
+
+weather
+calculation
+web_search
+fetch_page
 
 Return ONLY valid JSON.
-
-Format:
-
-{
-    "tasks": [
-        {
-            "task": "task description",
-            "depends_on": []
-        }
-    ]
-}
 
 Example:
 
 {
     "tasks": [
         {
-            "task": "Search for an article",
+            "task": "Find current weather in Chennai",
+            "type": "weather",
+            "city": "Chennai",
             "depends_on": []
         },
         {
-            "task": "Fetch the article",
-            "depends_on": [
-                "Search for an article"
-            ]
+            "task": "Calculate 1 multiplied by 50393",
+            "type": "calculation",
+            "expression": "1 * 50393",
+            "depends_on": []
         }
     ]
 }
@@ -63,7 +64,7 @@ Example:
         response_format={
             "type": "json_object"
         },
-        max_tokens=700,
+        max_tokens=800,
     )
 
     data = json.loads(
@@ -72,27 +73,26 @@ Example:
 
     return [
         {
-            "task": item["task"],
+            **task,
             "status": "pending",
-            "depends_on": item.get(
-                "depends_on",
-                []
-            ),
         }
-        for item in data["tasks"]
+        for task in data["tasks"]
     ]
 
 
 def get_ready_tasks(plan):
 
-    ready_tasks = []
+    ready = []
 
-    for item in plan:
+    for task in plan:
 
-        if item["status"] != "pending":
+        if task["status"] != "pending":
             continue
 
-        dependencies = item["depends_on"]
+        dependencies = task.get(
+            "depends_on",
+            []
+        )
 
         dependencies_complete = all(
             any(
@@ -104,17 +104,15 @@ def get_ready_tasks(plan):
         )
 
         if dependencies_complete:
-            ready_tasks.append(item)
 
-    return ready_tasks
+            ready.append(task)
+
+    return ready
 
 
 def all_tasks_complete(plan):
 
-    if not plan:
-        return False
-
-    return all(
-        item["status"] == "complete"
-        for item in plan
+    return bool(plan) and all(
+        task["status"] == "complete"
+        for task in plan
     )
