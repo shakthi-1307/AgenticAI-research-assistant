@@ -2,9 +2,10 @@ import json
 from dataclasses import dataclass, field
 
 from groq import Groq
-from .executor import execute_ready_tasks
+
 from .context import build_context
 from .config import GROQ_API_KEY, MODEL
+from .executor import execute_ready_tasks
 from .planner import (
     create_plan,
     get_ready_tasks,
@@ -45,7 +46,6 @@ class AgentState:
 
 
 def save_result(state, result):
-
     """
     Store a completed task result
     in working memory.
@@ -61,7 +61,6 @@ def save_result(state, result):
 
 
 def get_working_memory(state):
-
     """
     Return information collected
     during the current agent run.
@@ -107,18 +106,9 @@ Be concise and factual.
 
 async def research(question: str):
 
-    """
-    Parent Agent.
-
-    Responsible for:
-
-    1. Creating the plan
-    2. Finding ready tasks
-    3. Sending tasks to executor
-    4. Collecting results
-    5. Updating state
-    6. Producing final answer
-    """
+    # -----------------------------------------
+    # 1. CREATE AGENT STATE
+    # -----------------------------------------
 
     state = AgentState(
         messages=[
@@ -130,7 +120,7 @@ async def research(question: str):
     )
 
     # -----------------------------------------
-    # 1. CREATE PLAN
+    # 2. CREATE PLAN
     # -----------------------------------------
 
     state.plan = create_plan(
@@ -151,7 +141,7 @@ async def research(question: str):
         )
 
     # -----------------------------------------
-    # 2. EXECUTION LOOP
+    # 3. MAIN AGENT LOOP
     # -----------------------------------------
 
     while (
@@ -160,6 +150,10 @@ async def research(question: str):
     ):
 
         state.iteration += 1
+
+        # -------------------------------------
+        # Find tasks that can run
+        # -------------------------------------
 
         ready_tasks = get_ready_tasks(
             state.plan
@@ -170,11 +164,23 @@ async def research(question: str):
             f"{len(ready_tasks)}"
         )
 
+        # -------------------------------------
+        # No tasks available
+        # -------------------------------------
+
         if not ready_tasks:
             break
 
         # -------------------------------------
-        # 3. EXECUTE READY TASKS
+        # Mark tasks as in progress
+        # -------------------------------------
+
+        for task in ready_tasks:
+
+            task["status"] = "in_progress"
+
+        # -------------------------------------
+        # Execute ready tasks in parallel
         # -------------------------------------
 
         results = await execute_ready_tasks(
@@ -182,7 +188,7 @@ async def research(question: str):
         )
 
         # -------------------------------------
-        # 4. PROCESS RESULTS
+        # Process worker results
         # -------------------------------------
 
         for item in results:
@@ -190,7 +196,10 @@ async def research(question: str):
             task = item["task"]
             result = item["result"]
 
-            # Research worker result
+            # ---------------------------------
+            # RESEARCH TASK
+            # ---------------------------------
+
             if task["type"] == "research":
 
                 if (
@@ -198,24 +207,101 @@ async def research(question: str):
                     and result.get("status")
                     == "complete"
                 ):
-                    task["status"] = (
-                        "complete"
-                    )
-                else:
-                    task["status"] = "failed"
 
-            # Calculation result
+                    task["status"] = "complete"
+
+                else:
+
+                    task["retries"] = (
+                        task.get(
+                            "retries",
+                            0
+                        ) + 1
+                    )
+
+                    print(
+                        f"Task failed: "
+                        f"{task['task']}"
+                    )
+
+                    print(
+                        f"Retry count: "
+                        f"{task['retries']}"
+                    )
+
+                    if (
+                        task["retries"]
+                        >= task.get(
+                            "max_retries",
+                            2
+                        )
+                    ):
+
+                        task["status"] = (
+                            "failed"
+                        )
+
+                    else:
+
+                        task["status"] = (
+                            "pending"
+                        )
+
+            # ---------------------------------
+            # OTHER TASKS
+            # ---------------------------------
+
             else:
 
                 if (
                     isinstance(result, dict)
                     and "error" not in result
                 ):
+
                     task["status"] = (
                         "complete"
                     )
+
                 else:
-                    task["status"] = "failed"
+
+                    task["retries"] = (
+                        task.get(
+                            "retries",
+                            0
+                        ) + 1
+                    )
+
+                    print(
+                        f"Task failed: "
+                        f"{task['task']}"
+                    )
+
+                    print(
+                        f"Retry count: "
+                        f"{task['retries']}"
+                    )
+
+                    if (
+                        task["retries"]
+                        >= task.get(
+                            "max_retries",
+                            2
+                        )
+                    ):
+
+                        task["status"] = (
+                            "failed"
+                        )
+
+                    else:
+
+                        task["status"] = (
+                            "pending"
+                        )
+
+            # ---------------------------------
+            # SAVE RESULT
+            # ---------------------------------
 
             save_result(
                 state,
@@ -223,7 +309,7 @@ async def research(question: str):
             )
 
         # -------------------------------------
-        # 5. SHOW WORKING MEMORY
+        # SHOW WORKING MEMORY
         # -------------------------------------
 
         print(
@@ -238,10 +324,12 @@ async def research(question: str):
         )
 
         # -------------------------------------
-        # 6. SHOW UPDATED PLAN
+        # SHOW UPDATED PLAN
         # -------------------------------------
 
-        print("\nUpdated plan:")
+        print(
+            "\nUpdated plan:"
+        )
 
         for index, task in enumerate(
             state.plan,
@@ -255,7 +343,7 @@ async def research(question: str):
             )
 
         # -------------------------------------
-        # 7. CHECK COMPLETION
+        # CHECK COMPLETION
         # -------------------------------------
 
         if all_tasks_complete(
@@ -269,7 +357,7 @@ async def research(question: str):
             break
 
     # -----------------------------------------
-    # 8. FINAL ANSWER
+    # 4. BUILD FINAL ANSWER
     # -----------------------------------------
 
     if all_tasks_complete(
@@ -283,6 +371,10 @@ async def research(question: str):
         )
 
         return state.final_answer
+
+    # -----------------------------------------
+    # 5. FAILURE
+    # -----------------------------------------
 
     return (
         "I could not complete the research."
