@@ -81,9 +81,7 @@ Example:
         max_tokens=800,
     )
 
-    data = json.loads(
-        response.choices[0].message.content
-    )
+    data = json.loads(response.choices[0].message.content)
 
     return [
         {
