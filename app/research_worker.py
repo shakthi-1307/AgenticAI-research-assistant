@@ -11,52 +11,9 @@ client = Groq(
 )
 
 MAX_RESEARCH_STEPS = 3
-MAX_TOOL_RESULT_CHARS = 8000
-MAX_MESSAGES = 8
 
 
-def clean_tool_result(result):
-    """
-    Keep tool results small before
-    sending them back to the LLM.
-    """
-
-    content = json.dumps(
-        result,
-        ensure_ascii=False
-    )
-
-    if len(content) > MAX_TOOL_RESULT_CHARS:
-        content = (
-            content[:MAX_TOOL_RESULT_CHARS]
-            + "\n...[truncated]"
-        )
-
-    return content
-
-
-def trim_messages(messages):
-    """
-    Keep the system prompt and the
-    most recent messages.
-    """
-
-    if len(messages) <= MAX_MESSAGES:
-        return messages
-
-    system_message = messages[0]
-
-    recent_messages = messages[
-        -(MAX_MESSAGES - 1):
-    ]
-
-    return [
-        system_message,
-        *recent_messages
-    ]
-
-
-def research_task(task):
+async def research_task(task):
 
     messages = [
         {
@@ -104,22 +61,10 @@ only on the gathered information.
 
     previous_queries = set()
 
-    # NEW: track worker execution
-    tool_calls = []
-    errors = []
-    sources = []
-
-    for step in range(
-        MAX_RESEARCH_STEPS
-    ):
+    for step in range(MAX_RESEARCH_STEPS):
 
         print(
-            f"Research worker step "
-            f"{step + 1}"
-        )
-
-        messages = trim_messages(
-            messages
+            f"Research worker step {step + 1}"
         )
 
         response = client.chat.completions.create(
@@ -132,26 +77,22 @@ only on the gathered information.
 
         message = response.choices[0].message
 
-        # -------------------------------------
+        # -------------------------------
         # FINISHED
-        # -------------------------------------
+        # -------------------------------
 
         if not message.tool_calls:
 
             return {
                 "status": "complete",
                 "answer": message.content,
-                "sources": sources,
-                "tool_calls": tool_calls,
-                "steps_used": step + 1,
-                "errors": errors,
             }
 
         messages.append(message)
 
-        # -------------------------------------
+        # -------------------------------
         # EXECUTE TOOL CALLS
-        # -------------------------------------
+        # -------------------------------
 
         for tool_call in message.tool_calls:
 
@@ -161,9 +102,9 @@ only on the gathered information.
                 tool_call.function.arguments
             )
 
-            # ---------------------------------
+            # ---------------------------
             # Prevent repeated searches
-            # ---------------------------------
+            # ---------------------------
 
             if name == "web_search":
 
@@ -175,22 +116,14 @@ only on the gathered information.
                         "Repeated search detected."
                     )
 
-                    errors.append({
-                        "type": "repeated_search",
-                        "query": query,
-                    })
-
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": (
-                                tool_call.id
-                            ),
+                            "tool_call_id": tool_call.id,
                             "name": name,
                             "content": (
                                 "This search query "
                                 "was already executed. "
-                                "Do not repeat it. "
                                 "Use the existing results "
                                 "and finish the task."
                             ),
@@ -202,8 +135,7 @@ only on the gathered information.
                 previous_queries.add(query)
 
             print(
-                f"Research worker tool: "
-                f"{name}"
+                f"Research worker tool: {name}"
             )
 
             result = execute_tool(
@@ -211,68 +143,27 @@ only on the gathered information.
                 arguments
             )
 
-            # ---------------------------------
-            # Track tool call
-            # ---------------------------------
-
-            tool_calls.append({
-                "tool": name,
-                "arguments": arguments,
-                "step": step + 1,
-            })
-
-            # ---------------------------------
-            # Track sources
-            # ---------------------------------
-
-            if name == "web_search":
-
-                if isinstance(result, list):
-
-                    for item in result:
-
-                        if isinstance(item, dict):
-
-                            url = item.get("url")
-
-                            if url:
-                                sources.append(url)
-
             print("\n--- TOOL RESULT ---")
-
             print(
                 json.dumps(
                     result,
                     indent=2
                 )[:5000]
             )
-
-            print(
-                "--- END TOOL RESULT ---\n"
-            )
-
-            # ---------------------------------
-            # Clean result
-            # ---------------------------------
-
-            content = clean_tool_result(
-                result
-            )
+            print("--- END TOOL RESULT ---\n")
 
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": (
-                        tool_call.id
-                    ),
+                    "tool_call_id": tool_call.id,
                     "name": name,
-                    "content": content,
+                    "content": json.dumps(result),
                 }
             )
 
-    # -----------------------------------------
+    # -------------------------------
     # MAX STEPS
-    # -----------------------------------------
+    # -------------------------------
 
     return {
         "status": "failed",
@@ -281,8 +172,4 @@ only on the gathered information.
             "complete the task within "
             "the allowed number of steps."
         ),
-        "sources": sources,
-        "tool_calls": tool_calls,
-        "steps_used": MAX_RESEARCH_STEPS,
-        "errors": errors,
     }

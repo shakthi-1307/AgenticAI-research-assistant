@@ -2,10 +2,9 @@ import json
 from dataclasses import dataclass, field
 
 from groq import Groq
-
+from .executor import execute_ready_tasks
 from .context import build_context
 from .config import GROQ_API_KEY, MODEL
-from .executor import execute_ready_tasks
 from .planner import (
     create_plan,
     get_ready_tasks,
@@ -46,19 +45,17 @@ class AgentState:
 
 
 def save_result(state, result):
+
     """
     Store a completed task result
     in working memory.
     """
 
-    task = result["task"]
-    task_result = result["result"]
-
     state.results.append(
         {
-            "task": task["task"],
-            "type": task["type"],
-            "result": task_result,
+            "task": result["task"]["task"],
+            "type": result["task"]["type"],
+            "result": result["result"],
         }
     )
 
@@ -66,7 +63,7 @@ def save_result(state, result):
 def get_working_memory(state):
 
     """
-    Return the information collected
+    Return information collected
     during the current agent run.
     """
 
@@ -85,14 +82,6 @@ def build_final_answer(state):
                 "content": """
 Answer the user's question using the
 provided agent context.
-
-The context may contain results from
-specialized workers.
-
-Use the worker answers as evidence.
-
-If sources are provided, use them to
-support factual claims.
 
 Do not call tools.
 
@@ -118,6 +107,19 @@ Be concise and factual.
 
 async def research(question: str):
 
+    """
+    Parent Agent.
+
+    Responsible for:
+
+    1. Creating the plan
+    2. Finding ready tasks
+    3. Sending tasks to executor
+    4. Collecting results
+    5. Updating state
+    6. Producing final answer
+    """
+
     state = AgentState(
         messages=[
             {
@@ -128,7 +130,7 @@ async def research(question: str):
     )
 
     # -----------------------------------------
-    # 1. PLAN
+    # 1. CREATE PLAN
     # -----------------------------------------
 
     state.plan = create_plan(
@@ -169,7 +171,6 @@ async def research(question: str):
         )
 
         if not ready_tasks:
-
             break
 
         # -------------------------------------
@@ -181,7 +182,7 @@ async def research(question: str):
         )
 
         # -------------------------------------
-        # 4. SAVE TO WORKING MEMORY
+        # 4. PROCESS RESULTS
         # -------------------------------------
 
         for item in results:
@@ -189,17 +190,13 @@ async def research(question: str):
             task = item["task"]
             result = item["result"]
 
-            # ---------------------------------
-            # Determine task status
-            # ---------------------------------
-
+            # Research worker result
             if task["type"] == "research":
 
                 if (
                     isinstance(result, dict)
-                    and result.get(
-                        "status"
-                    ) == "complete"
+                    and result.get("status")
+                    == "complete"
                 ):
                     task["status"] = (
                         "complete"
@@ -207,6 +204,7 @@ async def research(question: str):
                 else:
                     task["status"] = "failed"
 
+            # Calculation result
             else:
 
                 if (
@@ -218,10 +216,6 @@ async def research(question: str):
                     )
                 else:
                     task["status"] = "failed"
-
-            # ---------------------------------
-            # Store structured result
-            # ---------------------------------
 
             save_result(
                 state,
@@ -244,7 +238,7 @@ async def research(question: str):
         )
 
         # -------------------------------------
-        # 6. SHOW PLAN
+        # 6. SHOW UPDATED PLAN
         # -------------------------------------
 
         print("\nUpdated plan:")
@@ -261,7 +255,7 @@ async def research(question: str):
             )
 
         # -------------------------------------
-        # 7. COMPLETION
+        # 7. CHECK COMPLETION
         # -------------------------------------
 
         if all_tasks_complete(
