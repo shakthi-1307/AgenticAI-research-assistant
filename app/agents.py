@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field
 
 from groq import Groq
+
 from .context import build_context
 from .config import GROQ_API_KEY, MODEL
 from .executor import execute_ready_tasks
@@ -44,17 +45,20 @@ class AgentState:
     final_answer: str | None = None
 
 
-def save_result(state,result):
+def save_result(state, result):
     """
     Store a completed task result
     in working memory.
     """
 
+    task = result["task"]
+    task_result = result["result"]
+
     state.results.append(
         {
-            "task": result["task"]["task"],
-            "type": result["task"]["type"],
-            "result": result["result"],
+            "task": task["task"],
+            "type": task["type"],
+            "result": task_result,
         }
     )
 
@@ -74,13 +78,21 @@ def build_final_answer(state):
     context = build_context(state)
 
     response = client.chat.completions.create(
-    model=MODEL,
-    messages=[
-        {
-            "role": "system",
-            "content": """
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": """
 Answer the user's question using the
 provided agent context.
+
+The context may contain results from
+specialized workers.
+
+Use the worker answers as evidence.
+
+If sources are provided, use them to
+support factual claims.
 
 Do not call tools.
 
@@ -88,17 +100,18 @@ Do not invent information.
 
 Be concise and factual.
 """,
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Agent context:\n\n"
-                f"{context}"
-            ),
-        },
-    ],
-    tool_choice="none",
-    max_tokens=1500,)
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Agent context:\n\n"
+                    f"{context}"
+                ),
+            },
+        ],
+        tool_choice="none",
+        max_tokens=1500,
+    )
 
     return response.choices[0].message.content
 
@@ -176,6 +189,10 @@ async def research(question: str):
             task = item["task"]
             result = item["result"]
 
+            # ---------------------------------
+            # Determine task status
+            # ---------------------------------
+
             if task["type"] == "research":
 
                 if (
@@ -201,6 +218,10 @@ async def research(question: str):
                     )
                 else:
                     task["status"] = "failed"
+
+            # ---------------------------------
+            # Store structured result
+            # ---------------------------------
 
             save_result(
                 state,
