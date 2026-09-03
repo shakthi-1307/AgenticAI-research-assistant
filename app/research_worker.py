@@ -1,7 +1,7 @@
 import json
 
 from groq import Groq
-
+from .summarizer import summarize_content
 from .config import GROQ_API_KEY, MODEL
 from .tools import TOOLS, execute_tool
 
@@ -12,6 +12,33 @@ client = Groq(
 
 MAX_RESEARCH_STEPS = 3
 
+def prepare_tool_result(result):
+    """
+    Keep tool results small enough to safely send
+    back to the LLM.
+    """
+
+    content = json.dumps(
+        result,
+        ensure_ascii=False
+    )
+
+    MAX_CHARS = 12000
+
+    if len(content) > MAX_CHARS:
+
+        print(
+            f"Tool result too large "
+            f"({len(content)} chars). "
+            f"Truncating to {MAX_CHARS}."
+        )
+
+        content = (
+            content[:MAX_CHARS]
+            + "\n...[tool result truncated]"
+        )
+
+    return content
 
 async def research_task(task):
 
@@ -72,6 +99,7 @@ only on the gathered information.
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
+            temperature=0.0,
             max_tokens=1000,
         )
 
@@ -94,82 +122,124 @@ only on the gathered information.
         # EXECUTE TOOL CALLS
         # -------------------------------
 
-        for tool_call in message.tool_calls:
+        # ---------------------------------
+# EXECUTE TOOL CALLS
+# ---------------------------------
 
-            name = tool_call.function.name
+    for tool_call in message.tool_calls:
 
-            arguments = json.loads(
-                tool_call.function.arguments
-            )
+        name = tool_call.function.name
 
-            # ---------------------------
-            # Prevent repeated searches
-            # ---------------------------
+        arguments = json.loads(
+            tool_call.function.arguments
+        )
 
-            if name == "web_search":
+        # ---------------------------------
+        # Prevent repeated searches
+        # ---------------------------------
 
-                query = arguments["query"]
+        if name == "web_search":
 
-                if query in previous_queries:
+            query = arguments["query"]
 
-                    print(
-                        "Repeated search detected."
-                    )
+            if query in previous_queries:
 
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": name,
-                            "content": (
-                                "This search query "
-                                "was already executed. "
-                                "Use the existing results "
-                                "and finish the task."
-                            ),
-                        }
-                    )
+                print(
+                    "Repeated search detected."
+                )
 
-                    continue
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": name,
+                        "content": (
+                            "This search query was "
+                            "already executed. "
+                            "Use the existing results "
+                            "and finish the task."
+                        ),
+                    }
+                )
 
-                previous_queries.add(query)
+                continue
 
-            print(
-                f"Research worker tool: {name}"
-            )
+            previous_queries.add(query)
 
-            result = execute_tool(
-                name,
-                arguments
-            )
+        print(
+            f"Research worker tool: {name}"
+        )
 
-            print("\n--- TOOL RESULT ---")
-            print(
-                json.dumps(
-                    result,
-                    indent=2
-                )[:5000]
-            )
-            print("--- END TOOL RESULT ---\n")
+        result = execute_tool(
+            name,
+            arguments
+        )
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": name,
-                    "content": json.dumps(result),
+        print("\n--- TOOL RESULT ---")
+        print(
+            json.dumps(
+                result,
+                indent=2
+            )[:5000]
+        )
+        print("--- END TOOL RESULT ---\n")
+
+        # ---------------------------------
+        # FETCH PAGE → SUMMARIZE
+        # ---------------------------------
+
+        if name == "fetch_page":
+
+            if (
+                isinstance(result, dict)
+                and "content" in result
+            ):
+
+                print(
+                    "Summarizing fetched webpage..."
+                )
+
+                summary = summarize_content(
+                    content=result["content"],
+                    question=task["task"],
+                )
+
+                result = {
+                    "url": result.get(
+                        "url",
+                        arguments["url"]
+                    ),
+                    "summary": summary,
                 }
-            )
 
-    # -------------------------------
-    # MAX STEPS
-    # -------------------------------
+                print(
+                    "\n--- PAGE SUMMARY ---"
+                )
 
-    return {
-        "status": "failed",
-        "answer": (
-            "Research worker could not "
-            "complete the task within "
-            "the allowed number of steps."
-        ),
-    }
+                print(summary)
+
+                print(
+                    "--- END PAGE SUMMARY ---\n"
+                )
+
+            else:
+
+                print(
+                    "Page fetch failed; "
+                    "skipping summarization."
+                )
+
+        # ---------------------------------
+        # SEND RESULT BACK TO WORKER
+        # ---------------------------------
+
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": name,
+                "content": json.dumps(
+                    result
+                ),
+            }
+        )

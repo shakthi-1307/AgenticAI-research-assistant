@@ -96,15 +96,35 @@ def get_ready_tasks(plan):
 
     ready = []
 
-    for task in plan:
+    for index, task in enumerate(plan):
 
-        if task["status"] == "pending":
-            ready.append(task)
-
-        elif (
-            task["status"] == "failed"
-            and task.get("retries", 0) < task.get("max_retries", 2)
+        if task["status"] not in (
+            "pending",
+            "failed",
         ):
+            continue
+
+        # Don't retry beyond limit
+        if (
+            task["status"] == "failed"
+            and task.get("retries", 0)
+            >= task.get("max_retries", 2)
+        ):
+            continue
+
+        dependencies = task.get(
+            "depends_on",
+            []
+        )
+
+        dependencies_complete = all(
+            plan[dependency]["status"]
+            == "complete"
+            for dependency in dependencies
+        )
+
+        if dependencies_complete:
+
             ready.append(task)
 
     return ready

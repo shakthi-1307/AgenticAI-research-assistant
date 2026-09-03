@@ -58,7 +58,10 @@ def web_search(query: str):
     
 def fetch_page(url: str):
     """
-    Fetch a webpage.
+    Fetch a webpage and extract clean,
+    readable text from the HTML.
+
+    Raw HTML is never returned to the LLM.
     """
 
     try:
@@ -79,7 +82,72 @@ def fetch_page(url: str):
 
         response.raise_for_status()
 
-        return response.text
+        # -----------------------------------------
+        # Parse HTML
+        # -----------------------------------------
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # -----------------------------------------
+        # Remove irrelevant HTML elements
+        # -----------------------------------------
+
+        for element in soup(
+            [
+                "script",
+                "style",
+                "noscript",
+                "svg",
+                "nav",
+                "footer",
+                "header",
+                "form",
+                "aside",
+            ]
+        ):
+
+            element.decompose()
+
+        # -----------------------------------------
+        # Extract visible text
+        # -----------------------------------------
+
+        text = soup.get_text(
+            separator="\n"
+        )
+
+        # -----------------------------------------
+        # Clean whitespace
+        # -----------------------------------------
+
+        lines = []
+
+        for line in text.splitlines():
+
+            line = line.strip()
+
+            if line:
+                lines.append(line)
+
+        clean_text = "\n".join(lines)
+
+        # -----------------------------------------
+        # Hard safety limit
+        # -----------------------------------------
+
+        MAX_PAGE_CHARS = 12000
+
+        clean_text = clean_text[
+            :MAX_PAGE_CHARS
+        ]
+
+        return {
+            "url": url,
+            "content": clean_text,
+        }
 
     except requests.Timeout:
 
@@ -91,11 +159,20 @@ def fetch_page(url: str):
 
         return {
             "error": (
-                f"Failed to fetch webpage: {str(error)}"
+                f"Failed to fetch webpage: "
+                f"{str(error)}"
             )
         }
 
+    except Exception as error:
 
+        return {
+            "error": (
+                f"Failed to process webpage: "
+                f"{str(error)}"
+            )
+        }
+        
 def calculator(expression: str):
     """
     Calculate a basic mathematical expression.
