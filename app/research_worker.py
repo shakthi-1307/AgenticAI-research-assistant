@@ -1,245 +1,416 @@
 import json
-
 from groq import Groq
-from .summarizer import summarize_content
+
 from .config import GROQ_API_KEY, MODEL
-from .tools import TOOLS, execute_tool
+from .tools import TOOLS, execute_tool_async
+from .summarizer import summarize_content
 
 
-client = Groq(
-    api_key=GROQ_API_KEY
-)
+client = Groq(api_key=GROQ_API_KEY)
 
-MAX_RESEARCH_STEPS = 3
+MAX_STEPS = 5
+MAX_TOOL_RESULT_CHARS = 12000
+
 
 def prepare_tool_result(result):
     """
-    Keep tool results small enough to safely send
-    back to the LLM.
+    Convert a tool result into a bounded string
+    before sending it back to the LLM.
     """
 
     content = json.dumps(
         result,
-        ensure_ascii=False
+        ensure_ascii=False,
     )
 
-    MAX_CHARS = 12000
-
-    if len(content) > MAX_CHARS:
-
+    if len(content) > MAX_TOOL_RESULT_CHARS:
         print(
             f"Tool result too large "
             f"({len(content)} chars). "
-            f"Truncating to {MAX_CHARS}."
+            f"Truncating to {MAX_TOOL_RESULT_CHARS}."
         )
 
         content = (
-            content[:MAX_CHARS]
+            content[:MAX_TOOL_RESULT_CHARS]
             + "\n...[tool result truncated]"
         )
 
     return content
 
+
 async def research_task(task):
+    """
+    Research worker agent.
+
+    The worker:
+    1. Receives a research task.
+    2. Decides which tools to use.
+    3. Executes tools.
+    4. Summarizes fetched webpages.
+    5. Uses the collected evidence to produce a final result.
+    """
+
+    question = task["task"]
 
     messages = [
         {
             "role": "system",
             "content": """
-You are a research worker.
+You are a research worker agent.
 
-Your job is to answer ONE research question.
+Your job is to research the user's question using the
+available tools and produce a concise evidence-based answer.
 
-You have two possible actions:
+Available tools:
 
-1. SEARCH
-   Use web_search to find information.
+1. web_search
 
-2. FINISH
-   Provide the final answer when enough
-   evidence has been collected.
+Arguments MUST be exactly:
 
-IMPORTANT RULES:
+{
+    "query": "your search query"
+}
 
-- Start with web_search for factual questions.
-- After receiving search results, inspect them.
-- If the results are sufficient to answer,
-  FINISH immediately.
-- Do not perform another search if the existing
-  results already contain the answer.
-- Never repeat the same search query.
-- Do not search just because another iteration
-  is available.
-- For simple questions, one search is normally
-  enough.
+IMPORTANT:
+- The argument name is ALWAYS "query".
+- NEVER use "id".
+- NEVER use "search_results".
+- NEVER use "results".
+- NEVER use "search".
+- NEVER call web_search without a query.
 
-When you finish, give a concise answer based
-only on the gathered information.
+Example:
+
+{
+    "query": "what is artificial intelligence"
+}
+
+2. fetch_page
+
+Arguments MUST be exactly:
+
+{
+    "url": "https://example.com"
+}
+
+3. calculator
+
+Arguments MUST be exactly:
+
+{
+    "expression": "2 + 3"
+}
+
+4. get_weather
+
+Arguments MUST be exactly:
+
+{
+    "city": "Chennai"
+}
+
+Research process:
+
+1. Start with web_search when external information is needed.
+2. Examine the search results.
+3. If a result contains a useful webpage, use fetch_page.
+4. Fetched webpages will be summarized separately.
+5. Use the summaries as evidence.
+6. Avoid repeatedly searching for the exact same thing.
+7. Do not call unnecessary tools.
+8. Once you have enough information, stop using tools and answer.
+
+Do not invent information.
+
+If the available evidence is insufficient, say so.
+
+Keep the final answer concise and factual.
 """,
         },
         {
             "role": "user",
-            "content": (
-                "Research question:\n"
-                + task["task"]
-            ),
+            "content": question,
         },
     ]
 
-    previous_queries = set()
+    used_search_queries = set()
+    used_urls = set()
 
-    for step in range(MAX_RESEARCH_STEPS):
+    for step in range(1, MAX_STEPS + 1):
 
-        print(
-            f"Research worker step {step + 1}"
-        )
+        print(f"Research worker step {step}")
 
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.0,
-            max_tokens=1000,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                max_tokens=1200,
+            )
+
+        except Exception as error:
+            print(f"Research worker LLM error: {error}")
+
+            return {
+                "status": "failed",
+                "error": f"Research worker LLM failed: {error}",
+            }
 
         message = response.choices[0].message
 
-        # -------------------------------
-        # FINISHED
-        # -------------------------------
+        # --------------------------------------------------
+        # No tool call -> worker has finished researching
+        # --------------------------------------------------
 
         if not message.tool_calls:
 
             return {
                 "status": "complete",
-                "answer": message.content,
+                "answer": message.content or "",
             }
 
-        messages.append(message)
+        # --------------------------------------------------
+        # Process tool calls
+        # --------------------------------------------------
 
-        # -------------------------------
-        # EXECUTE TOOL CALLS
-        # -------------------------------
+        for tool_call in message.tool_calls:
 
-        # ---------------------------------
-# EXECUTE TOOL CALLS
-# ---------------------------------
+            name = tool_call.function.name
 
-    for tool_call in message.tool_calls:
-
-        name = tool_call.function.name
-
-        arguments = json.loads(
-            tool_call.function.arguments
-        )
-
-        # ---------------------------------
-        # Prevent repeated searches
-        # ---------------------------------
-
-        if name == "web_search":
-
-            query = arguments["query"]
-
-            if query in previous_queries:
+            try:
+                arguments = json.loads(
+                    tool_call.function.arguments
+                )
+            except json.JSONDecodeError as error:
 
                 print(
-                    "Repeated search detected."
+                    f"Invalid tool arguments for {name}: "
+                    f"{error}"
                 )
 
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": name,
+                        "role": "assistant",
+                        "content": message.content or "",
+                    }
+                )
+
+                messages.append(
+                    {
+                        "role": "user",
                         "content": (
-                            "This search query was "
-                            "already executed. "
-                            "Use the existing results "
-                            "and finish the task."
+                            f"The previous tool call for "
+                            f"{name} had invalid JSON arguments. "
+                            f"Please retry with valid JSON."
                         ),
                     }
                 )
 
                 continue
 
-            previous_queries.add(query)
+            print(
+                f"Research worker tool call: "
+                f"{name} {arguments}"
+            )
 
-        print(
-            f"Research worker tool: {name}"
-        )
+            # --------------------------------------------------
+            # Prevent duplicate web searches
+            # --------------------------------------------------
 
-        result = execute_tool(
-            name,
-            arguments
-        )
+            if name == "web_search":
 
-        print("\n--- TOOL RESULT ---")
-        print(
-            json.dumps(
-                result,
-                indent=2
-            )[:5000]
-        )
-        print("--- END TOOL RESULT ---\n")
+                query = arguments.get("query")
 
-        # ---------------------------------
-        # FETCH PAGE → SUMMARIZE
-        # ---------------------------------
+                if not query:
+                    print(
+                        "Invalid web_search call: "
+                        "missing query."
+                    )
 
-        if name == "fetch_page":
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": message.content or "",
+                        }
+                    )
+
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The web_search tool requires "
+                                'arguments in this exact form: '
+                                '{"query": "your search query"}. '
+                                "Please provide a valid query."
+                            ),
+                        }
+                    )
+
+                    continue
+
+                normalized_query = query.strip().lower()
+
+                if normalized_query in used_search_queries:
+
+                    print(
+                        f"Skipping duplicate search: {query}"
+                    )
+
+                    continue
+
+                used_search_queries.add(normalized_query)
+
+            # --------------------------------------------------
+            # Prevent duplicate webpage fetching
+            # --------------------------------------------------
+
+            if name == "fetch_page":
+
+                url = arguments.get("url")
+
+                if not url:
+                    print(
+                        "Invalid fetch_page call: "
+                        "missing url."
+                    )
+
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": message.content or "",
+                        }
+                    )
+
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The fetch_page tool requires "
+                                'arguments in this exact form: '
+                                '{"url": "https://example.com"}. '
+                                "Please provide a valid URL."
+                            ),
+                        }
+                    )
+
+                    continue
+
+                if url in used_urls:
+
+                    print(
+                        f"Skipping duplicate URL: {url}"
+                    )
+
+                    continue
+
+                used_urls.add(url)
+
+            # --------------------------------------------------
+            # Execute the tool
+            # --------------------------------------------------
+
+            try:
+                result = await execute_tool_async(
+                    name,
+                    arguments,
+                )
+
+            except Exception as error:
+
+                result = {
+                    "error": (
+                        f"Tool execution failed: {error}"
+                    )
+                }
+
+            # --------------------------------------------------
+            # Fetch page -> summarize page
+            # --------------------------------------------------
 
             if (
-                isinstance(result, dict)
+                name == "fetch_page"
+                and isinstance(result, dict)
                 and "content" in result
             ):
 
-                print(
-                    "Summarizing fetched webpage..."
-                )
+                print("Summarizing fetched webpage...")
 
-                summary = summarize_content(
-                    content=result["content"],
-                    question=task["task"],
-                )
+                try:
 
-                result = {
-                    "url": result.get(
-                        "url",
-                        arguments["url"]
-                    ),
-                    "summary": summary,
+                    summary = summarize_content(
+                        content=result["content"],
+                        question=question,
+                    )
+
+                    result = {
+                        "url": result.get("url"),
+                        "summary": summary,
+                    }
+
+                except Exception as error:
+
+                    print(
+                        f"Summarization failed: {error}"
+                    )
+
+                    result = {
+                        "url": result.get("url"),
+                        "error": (
+                            f"Could not summarize webpage: "
+                            f"{error}"
+                        ),
+                    }
+
+            # --------------------------------------------------
+            # Add assistant's tool call to conversation
+            # --------------------------------------------------
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": (
+                                    tool_call.function.arguments
+                                ),
+                            },
+                        }
+                    ],
                 }
+            )
 
-                print(
-                    "\n--- PAGE SUMMARY ---"
-                )
+            # --------------------------------------------------
+            # Add bounded tool result
+            # --------------------------------------------------
 
-                print(summary)
+            safe_result = prepare_tool_result(result)
 
-                print(
-                    "--- END PAGE SUMMARY ---\n"
-                )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": safe_result,
+                }
+            )
 
-            else:
+    # ------------------------------------------------------
+    # Maximum research steps reached
+    # ------------------------------------------------------
 
-                print(
-                    "Page fetch failed; "
-                    "skipping summarization."
-                )
+    print(
+        "Research worker reached maximum steps."
+    )
 
-        # ---------------------------------
-        # SEND RESULT BACK TO WORKER
-        # ---------------------------------
-
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": name,
-                "content": json.dumps(
-                    result
-                ),
-            }
-        )
+    return {
+        "status": "complete",
+        "answer": (
+            "Research completed, but the worker reached "
+            "its maximum number of research steps."
+        ),
+    }
