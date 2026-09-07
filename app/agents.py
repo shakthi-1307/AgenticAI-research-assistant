@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 
 from groq import Groq
 
-from .config import GROQ_API_KEY, MODEL
 from .context import build_context
+from .config import GROQ_API_KEY, MODEL
 from .executor import execute_ready_tasks
 from .planner import (
     create_plan,
@@ -13,52 +13,26 @@ from .planner import (
 )
 
 
-client = Groq(
-    api_key=GROQ_API_KEY
-)
-
+client = Groq(api_key=GROQ_API_KEY)
 
 MAX_ITERATIONS = 5
 
 
-# ============================================================
-# AGENT STATE
-# ============================================================
-
 @dataclass
 class AgentState:
 
-    # Conversation/context visible to the parent LLM
-    messages: list = field(
-        default_factory=list
-    )
+    messages: list = field(default_factory=list)
 
-    # Tasks created by the planner
-    plan: list = field(
-        default_factory=list
-    )
+    plan: list = field(default_factory=list)
 
-    # Results produced by workers
-    results: list = field(
-        default_factory=list
-    )
+    results: list = field(default_factory=list)
 
-    # Runtime information
     iteration: int = 0
 
-    # Final answer
     final_answer: str | None = None
 
 
-# ============================================================
-# SAVE WORKER RESULT
-# ============================================================
-
 def save_result(state, result):
-    """
-    Store the result returned by a worker
-    in the parent agent's working memory.
-    """
 
     state.results.append(
         {
@@ -69,28 +43,12 @@ def save_result(state, result):
     )
 
 
-# ============================================================
-# WORKING MEMORY
-# ============================================================
-
 def get_working_memory(state):
-    """
-    Return the results collected
-    during the current agent run.
-    """
 
     return state.results
 
 
-# ============================================================
-# FINAL ANSWER
-# ============================================================
-
 def build_final_answer(state):
-    """
-    Ask the parent LLM to synthesize
-    the worker results into the final answer.
-    """
 
     context = build_context(state)
 
@@ -100,25 +58,20 @@ def build_final_answer(state):
             {
                 "role": "system",
                 "content": """
-You are the final answer generator.
+Answer the user's question using the
+provided agent context.
 
-Answer the user's original question using
-the information collected by the agents.
+Do not call tools.
 
-Rules:
+Do not invent information.
 
-- Use only the provided agent context.
-- Do not call tools.
-- Do not invent information.
-- If a task failed, clearly acknowledge it.
-- Give a concise and useful answer.
+Be concise and factual.
 """,
             },
             {
                 "role": "user",
                 "content": (
-                    f"Agent context:\n\n"
-                    f"{context}"
+                    f"Agent context:\n\n{context}"
                 ),
             },
         ],
@@ -129,29 +82,7 @@ Rules:
     return response.choices[0].message.content
 
 
-# ============================================================
-# PARENT AGENT
-# ============================================================
-
 async def research(question: str):
-
-    """
-    Main parent agent.
-
-    Responsibilities:
-
-    1. Create the plan.
-    2. Find tasks that are ready.
-    3. Send ready tasks to the executor.
-    4. Receive worker results.
-    5. Update task states.
-    6. Store results in working memory.
-    7. Generate the final answer.
-    """
-
-    # --------------------------------------------------------
-    # INITIAL STATE
-    # --------------------------------------------------------
 
     state = AgentState(
         messages=[
@@ -162,13 +93,11 @@ async def research(question: str):
         ]
     )
 
-    # --------------------------------------------------------
-    # 1. CREATE PLAN
-    # --------------------------------------------------------
+    # ---------------------------------------------
+    # Create task plan
+    # ---------------------------------------------
 
-    state.plan = create_plan(
-        question
-    )
+    state.plan = create_plan(question)
 
     print("\nPlan:")
 
@@ -183,125 +112,126 @@ async def research(question: str):
             f"[{task['status']}]"
         )
 
-    # --------------------------------------------------------
-    # 2. AGENT EXECUTION LOOP
-    # --------------------------------------------------------
+    # ---------------------------------------------
+    # Main agent loop
+    # ---------------------------------------------
 
-    while (
-        state.iteration
-        < MAX_ITERATIONS
-    ):
+    while state.iteration < MAX_ITERATIONS:
 
         state.iteration += 1
 
-        # ----------------------------------------------------
-        # FIND TASKS THAT CAN RUN
-        # ----------------------------------------------------
+        print(
+            f"\n--- Agent iteration "
+            f"{state.iteration} ---"
+        )
 
         ready_tasks = get_ready_tasks(
             state.plan
         )
 
         print(
-            f"\nReady tasks: "
-            f"{len(ready_tasks)}"
+            f"Ready tasks: {len(ready_tasks)}"
         )
 
-        # No tasks available
         if not ready_tasks:
             break
 
-        # ----------------------------------------------------
-        # EXECUTE READY TASKS
-        # ----------------------------------------------------
+        # -----------------------------------------
+        # Execute ready tasks
+        # -----------------------------------------
 
         results = await execute_ready_tasks(
             ready_tasks
         )
 
-        # ----------------------------------------------------
-        # PROCESS WORKER RESULTS
-        # ----------------------------------------------------
+        # -----------------------------------------
+        # Process task results
+        # -----------------------------------------
 
         for item in results:
 
             task = item["task"]
+
             result = item["result"]
 
-            # -----------------------------------------------
-            # RESEARCH TASK
-            # -----------------------------------------------
+            # -------------------------------------
+            # Determine success
+            # -------------------------------------
 
             if task["type"] == "research":
 
-                if (
+                success = (
                     isinstance(result, dict)
                     and result.get("status")
                     == "complete"
-                ):
-
-                    task["status"] = (
-                        "complete"
-                    )
-
-                else:
-
-                    task["status"] = (
-                        "failed"
-                    )
-
-            # -----------------------------------------------
-            # OTHER TASKS
-            # -----------------------------------------------
+                )
 
             else:
 
-                if (
+                success = (
                     isinstance(result, dict)
                     and "error" not in result
-                ):
+                )
 
-                    task["status"] = (
-                        "complete"
-                    )
+            # -------------------------------------
+            # Successful task
+            # -------------------------------------
 
-                else:
+            if success:
 
-                    task["status"] = (
-                        "failed"
-                    )
+                task["status"] = "complete"
 
-            # -----------------------------------------------
-            # SAVE RESULT
-            # -----------------------------------------------
+                print(
+                    f"Task completed: "
+                    f"{task['task']}"
+                )
+
+            # -------------------------------------
+            # Failed task
+            # -------------------------------------
+
+            else:
+
+                task["status"] = "failed"
+
+                task["retries"] = (
+                    task.get("retries", 0) + 1
+                )
+
+                print(
+                    f"Task failed: "
+                    f"{task['task']}"
+                )
+
+                print(
+                    f"Retry count: "
+                    f"{task['retries']}/"
+                    f"{task.get('max_retries', 2)}"
+                )
 
             save_result(
                 state,
-                item
+                item,
             )
 
-        # ----------------------------------------------------
-        # SHOW WORKING MEMORY
-        # ----------------------------------------------------
+        # -----------------------------------------
+        # Show working memory
+        # -----------------------------------------
 
-        print(
-            "\nWorking memory:"
-        )
+        print("\nWorking memory:")
 
         print(
             json.dumps(
                 state.results,
-                indent=2
+                indent=2,
             )
         )
 
-        # ----------------------------------------------------
-        # SHOW UPDATED PLAN
-        # ----------------------------------------------------
+        # -----------------------------------------
+        # Show updated plan
+        # -----------------------------------------
 
-        print(
-            "\nUpdated plan:"
-        )
+        print("\nUpdated plan:")
 
         for index, task in enumerate(
             state.plan,
@@ -311,12 +241,14 @@ async def research(question: str):
             print(
                 f"{index}. "
                 f"{task['task']} "
-                f"[{task['status']}]"
+                f"[{task['status']}] "
+                f"(retries: "
+                f"{task.get('retries', 0)})"
             )
 
-        # ----------------------------------------------------
-        # CHECK COMPLETION
-        # ----------------------------------------------------
+        # -----------------------------------------
+        # Stop if everything completed
+        # -----------------------------------------
 
         if all_tasks_complete(
             state.plan
@@ -328,25 +260,19 @@ async def research(question: str):
 
             break
 
-    # --------------------------------------------------------
-    # 3. GENERATE FINAL ANSWER
-    # --------------------------------------------------------
+    # ---------------------------------------------
+    # Generate final answer
+    # ---------------------------------------------
 
     if all_tasks_complete(
         state.plan
     ):
 
         state.final_answer = (
-            build_final_answer(
-                state
-            )
+            build_final_answer(state)
         )
 
         return state.final_answer
-
-    # --------------------------------------------------------
-    # FAILED
-    # --------------------------------------------------------
 
     return (
         "I could not complete the research."

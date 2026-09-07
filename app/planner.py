@@ -37,15 +37,6 @@ Required arguments:
 - type
 - depends_on
 
-Example:
-
-{
-    "task": "Research the differences between AI and ML",
-    "type": "research",
-    "depends_on": []
-}
-
-
 2. weather
 
 Use weather when the user asks for
@@ -57,16 +48,6 @@ Required arguments:
 - city
 - depends_on
 
-Example:
-
-{
-    "task": "Get the current weather in Chennai",
-    "type": "weather",
-    "city": "Chennai",
-    "depends_on": []
-}
-
-
 3. calculation
 
 Use calculation for mathematical calculations.
@@ -77,27 +58,14 @@ Required arguments:
 - expression
 - depends_on
 
-Example:
-
-{
-    "task": "Calculate 25 multiplied by 4",
-    "type": "calculation",
-    "expression": "25 * 4",
-    "depends_on": []
-}
-
-
 IMPORTANT:
 
 - Always include all required arguments.
 - For weather tasks, ALWAYS include "city".
 - For calculation tasks, ALWAYS include "expression".
 - For research tasks, no additional argument is required.
-- Use an empty list [] for depends_on when the task has no dependencies.
+- Use [] for depends_on when there are no dependencies.
 - Return ONLY valid JSON.
-- Do not include explanations outside the JSON.
-
-Return the tasks inside a "tasks" array.
 
 Example:
 
@@ -131,27 +99,39 @@ Example:
         response.choices[0].message.content
     )
 
-    return [
-        {
-            **task,
-            "status": "pending"
-        }
-        for task in data["tasks"]
-    ]
+    tasks = []
+
+    for task in data["tasks"]:
+
+        task["status"] = "pending"
+
+        # Track how many times this task has been retried.
+        task["retries"] = 0
+
+        # Maximum number of retries after the first attempt.
+        task["max_retries"] = 2
+
+        tasks.append(task)
+
+    return tasks
 
 
 def get_ready_tasks(plan):
 
     ready = []
 
-    for index, task in enumerate(plan):
+    for task in plan:
 
+        # Only pending or retryable failed tasks
+        # should be executed.
         if task["status"] not in (
             "pending",
             "failed",
         ):
             continue
 
+        # Do not retry a task after it has exhausted
+        # its retry limit.
         if (
             task["status"] == "failed"
             and task.get("retries", 0)
