@@ -141,29 +141,20 @@ async def research(question: str):
         # -----------------------------------------
 
         results = await execute_ready_tasks(
-            ready_tasks
+            ready_tasks,
+            state.plan
         )
-
-        # -----------------------------------------
-        # Process task results
-        # -----------------------------------------
 
         for item in results:
 
             task = item["task"]
-
             result = item["result"]
-
-            # -------------------------------------
-            # Determine success
-            # -------------------------------------
 
             if task["type"] == "research":
 
                 success = (
                     isinstance(result, dict)
-                    and result.get("status")
-                    == "complete"
+                    and result.get("status") == "complete"
                 )
 
             else:
@@ -173,45 +164,30 @@ async def research(question: str):
                     and "error" not in result
                 )
 
-            # -------------------------------------
-            # Successful task
-            # -------------------------------------
-
             if success:
 
                 task["status"] = "complete"
+                task["result"] = result
 
                 print(
-                    f"Task completed: "
-                    f"{task['task']}"
+                    f"Task completed: {task['task']}"
                 )
-
-            # -------------------------------------
-            # Failed task
-            # -------------------------------------
 
             else:
 
                 task["status"] = "failed"
-
                 task["retries"] = (
                     task.get("retries", 0) + 1
                 )
 
                 print(
-                    f"Task failed: "
-                    f"{task['task']}"
-                )
-
-                print(
-                    f"Retry count: "
-                    f"{task['retries']}/"
-                    f"{task.get('max_retries', 2)}"
+                    f"Task failed: {task['task']} "
+                    f"(retry {task['retries']})"
                 )
 
             save_result(
                 state,
-                item,
+                item
             )
 
         # -----------------------------------------

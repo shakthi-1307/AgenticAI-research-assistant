@@ -2,16 +2,19 @@ from .research_worker import research_task
 from .tools import execute_tool
 
 
-async def execute_worker(task):
+async def execute_worker(task, dependency_results=None):
+
+    dependency_results = dependency_results or []
 
     task_type = task["type"]
 
-    # Research task
     if task_type == "research":
 
-        return await research_task(task)
+        return await research_task(
+            task,
+            dependency_results
+        )
 
-    # Calculation task
     if task_type == "calculation":
 
         return execute_tool(
@@ -21,7 +24,6 @@ async def execute_worker(task):
             }
         )
 
-    # Weather task
     if task_type == "weather":
 
         return execute_tool(
