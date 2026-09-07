@@ -1,4 +1,5 @@
 import json
+
 from groq import Groq
 
 from .config import GROQ_API_KEY, MODEL
@@ -8,7 +9,10 @@ from .summarizer import summarize_content
 
 client = Groq(api_key=GROQ_API_KEY)
 
-MAX_STEPS = 5
+# Hard safety limit.
+# The agent should normally stop before reaching this.
+MAX_STEPS = 6
+
 MAX_TOOL_RESULT_CHARS = 12000
 
 
@@ -24,6 +28,7 @@ def prepare_tool_result(result):
     )
 
     if len(content) > MAX_TOOL_RESULT_CHARS:
+
         print(
             f"Tool result too large "
             f"({len(content)} chars). "
@@ -43,11 +48,13 @@ async def research_task(task):
     Research worker agent.
 
     The worker:
+
     1. Receives a research task.
-    2. Decides which tools to use.
+    2. Decides which tools are needed.
     3. Executes tools.
     4. Summarizes fetched webpages.
-    5. Uses the collected evidence to produce a final result.
+    5. Evaluates whether enough evidence has been collected.
+    6. Produces a final research answer.
     """
 
     question = task["task"]
@@ -59,9 +66,9 @@ async def research_task(task):
 You are a research worker agent.
 
 Your job is to research the user's question using the
-available tools and produce a concise evidence-based answer.
+available tools and produce a concise, evidence-based answer.
 
-Available tools:
+AVAILABLE TOOLS
 
 1. web_search
 
@@ -82,8 +89,9 @@ IMPORTANT:
 Example:
 
 {
-    "query": "what is artificial intelligence"
+    "query": "differences between AI and machine learning"
 }
+
 
 2. fetch_page
 
@@ -93,6 +101,7 @@ Arguments MUST be exactly:
     "url": "https://example.com"
 }
 
+
 3. calculator
 
 Arguments MUST be exactly:
@@ -100,6 +109,7 @@ Arguments MUST be exactly:
 {
     "expression": "2 + 3"
 }
+
 
 4. get_weather
 
@@ -109,22 +119,55 @@ Arguments MUST be exactly:
     "city": "Chennai"
 }
 
-Research process:
+
+RESEARCH PROCESS
 
 1. Start with web_search when external information is needed.
+
 2. Examine the search results.
-3. If a result contains a useful webpage, use fetch_page.
-4. Fetched webpages will be summarized separately.
-5. Use the summaries as evidence.
-6. Avoid repeatedly searching for the exact same thing.
-7. Do not call unnecessary tools.
-8. Once you have enough information, stop using tools and answer.
 
-Do not invent information.
+3. Fetch useful webpages when additional detail
+   is required.
 
-If the available evidence is insufficient, say so.
+4. After every tool result, evaluate whether you
+   have enough reliable evidence to answer the question.
 
-Keep the final answer concise and factual.
+5. If you have enough evidence, STOP using tools
+   and provide the final answer.
+
+6. Only perform another search if the existing evidence
+   is insufficient, conflicting, or missing an important
+   part of the question.
+
+7. Avoid repeatedly searching for information you
+   already have.
+
+8. Do not call unnecessary tools.
+
+9. Never continue researching simply because another
+   step is available.
+
+10. Do not invent information.
+
+11. If the available evidence is insufficient,
+    clearly say so.
+
+12. Keep the final answer concise and factual.
+
+
+STOPPING CONDITION
+
+Your primary goal is to answer the question correctly,
+not to maximize the number of searches.
+
+If the collected evidence is sufficient:
+
+- Do not call another tool.
+- Return the final answer immediately.
+
+The system also imposes a maximum number of research
+steps as a safety limit. If that limit is reached,
+stop researching rather than continuing indefinitely.
 """,
         },
         {
@@ -133,14 +176,24 @@ Keep the final answer concise and factual.
         },
     ]
 
+    # Keep track of searches already performed.
     used_search_queries = set()
+
+    # Keep track of webpages already fetched.
     used_urls = set()
 
     for step in range(1, MAX_STEPS + 1):
 
-        print(f"Research worker step {step}")
+        print(
+            f"Research worker step {step}"
+        )
+
+        # --------------------------------------------------
+        # Ask the LLM what to do next
+        # --------------------------------------------------
 
         try:
+
             response = client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
@@ -150,17 +203,23 @@ Keep the final answer concise and factual.
             )
 
         except Exception as error:
-            print(f"Research worker LLM error: {error}")
+
+            print(
+                f"Research worker LLM error: {error}"
+            )
 
             return {
                 "status": "failed",
-                "error": f"Research worker LLM failed: {error}",
+                "error": (
+                    f"Research worker LLM failed: "
+                    f"{error}"
+                ),
             }
 
         message = response.choices[0].message
 
         # --------------------------------------------------
-        # No tool call -> worker has finished researching
+        # No tool call means the LLM has finished
         # --------------------------------------------------
 
         if not message.tool_calls:
@@ -178,15 +237,21 @@ Keep the final answer concise and factual.
 
             name = tool_call.function.name
 
+            # --------------------------------------------------
+            # Parse tool arguments
+            # --------------------------------------------------
+
             try:
+
                 arguments = json.loads(
                     tool_call.function.arguments
                 )
+
             except json.JSONDecodeError as error:
 
                 print(
-                    f"Invalid tool arguments for {name}: "
-                    f"{error}"
+                    f"Invalid tool arguments for "
+                    f"{name}: {error}"
                 )
 
                 messages.append(
@@ -201,8 +266,8 @@ Keep the final answer concise and factual.
                         "role": "user",
                         "content": (
                             f"The previous tool call for "
-                            f"{name} had invalid JSON arguments. "
-                            f"Please retry with valid JSON."
+                            f"{name} contained invalid JSON. "
+                            f"Retry using valid JSON arguments."
                         ),
                     }
                 )
@@ -215,7 +280,7 @@ Keep the final answer concise and factual.
             )
 
             # --------------------------------------------------
-            # Prevent duplicate web searches
+            # Validate web_search
             # --------------------------------------------------
 
             if name == "web_search":
@@ -223,6 +288,7 @@ Keep the final answer concise and factual.
                 query = arguments.get("query")
 
                 if not query:
+
                     print(
                         "Invalid web_search call: "
                         "missing query."
@@ -249,20 +315,29 @@ Keep the final answer concise and factual.
 
                     continue
 
-                normalized_query = query.strip().lower()
+                normalized_query = (
+                    query.strip().lower()
+                )
+
+                # --------------------------------------------------
+                # Prevent duplicate searches
+                # --------------------------------------------------
 
                 if normalized_query in used_search_queries:
 
                     print(
-                        f"Skipping duplicate search: {query}"
+                        f"Skipping duplicate search: "
+                        f"{query}"
                     )
 
                     continue
 
-                used_search_queries.add(normalized_query)
+                used_search_queries.add(
+                    normalized_query
+                )
 
             # --------------------------------------------------
-            # Prevent duplicate webpage fetching
+            # Validate fetch_page
             # --------------------------------------------------
 
             if name == "fetch_page":
@@ -270,6 +345,7 @@ Keep the final answer concise and factual.
                 url = arguments.get("url")
 
                 if not url:
+
                     print(
                         "Invalid fetch_page call: "
                         "missing url."
@@ -296,10 +372,15 @@ Keep the final answer concise and factual.
 
                     continue
 
+                # --------------------------------------------------
+                # Prevent duplicate webpage fetching
+                # --------------------------------------------------
+
                 if url in used_urls:
 
                     print(
-                        f"Skipping duplicate URL: {url}"
+                        f"Skipping duplicate URL: "
+                        f"{url}"
                     )
 
                     continue
@@ -307,10 +388,11 @@ Keep the final answer concise and factual.
                 used_urls.add(url)
 
             # --------------------------------------------------
-            # Execute the tool
+            # Execute tool
             # --------------------------------------------------
 
             try:
+
                 result = await execute_tool_async(
                     name,
                     arguments,
@@ -320,12 +402,13 @@ Keep the final answer concise and factual.
 
                 result = {
                     "error": (
-                        f"Tool execution failed: {error}"
+                        f"Tool execution failed: "
+                        f"{error}"
                     )
                 }
 
             # --------------------------------------------------
-            # Fetch page -> summarize page
+            # Fetch webpage -> summarize it
             # --------------------------------------------------
 
             if (
@@ -334,7 +417,9 @@ Keep the final answer concise and factual.
                 and "content" in result
             ):
 
-                print("Summarizing fetched webpage...")
+                print(
+                    "Summarizing fetched webpage..."
+                )
 
                 try:
 
@@ -351,19 +436,20 @@ Keep the final answer concise and factual.
                 except Exception as error:
 
                     print(
-                        f"Summarization failed: {error}"
+                        f"Summarization failed: "
+                        f"{error}"
                     )
 
                     result = {
                         "url": result.get("url"),
                         "error": (
-                            f"Could not summarize webpage: "
+                            "Could not summarize webpage: "
                             f"{error}"
                         ),
                     }
 
             # --------------------------------------------------
-            # Add assistant's tool call to conversation
+            # Add assistant tool call to conversation
             # --------------------------------------------------
 
             messages.append(
@@ -389,7 +475,9 @@ Keep the final answer concise and factual.
             # Add bounded tool result
             # --------------------------------------------------
 
-            safe_result = prepare_tool_result(result)
+            safe_result = prepare_tool_result(
+                result
+            )
 
             messages.append(
                 {
@@ -408,9 +496,9 @@ Keep the final answer concise and factual.
     )
 
     return {
-        "status": "complete",
+        "status": "max_steps",
         "answer": (
-            "Research completed, but the worker reached "
-            "its maximum number of research steps."
+            "Research could not be completed "
+            "within the maximum number of steps."
         ),
     }
