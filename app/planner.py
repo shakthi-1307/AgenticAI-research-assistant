@@ -5,9 +5,7 @@ from groq import Groq
 from .config import GROQ_API_KEY, MODEL
 
 
-client = Groq(
-    api_key=GROQ_API_KEY
-)
+client = Groq(api_key=GROQ_API_KEY)
 
 
 def create_plan(question: str):
@@ -29,41 +27,91 @@ For every task identify:
 
 Supported task types:
 
-research
-weather
-calculation
+1. research
 
-Use:
+Use research for questions requiring
+general knowledge or web research.
 
-research
-for questions requiring general knowledge
-or web research.
+Required arguments:
+- task
+- type
+- depends_on
 
-Use:
+Example:
 
-weather
-for current weather.
+{
+    "task": "Research the differences between AI and ML",
+    "type": "research",
+    "depends_on": []
+}
 
-Use:
 
-calculation
-for mathematical calculations.
+2. weather
 
-Return ONLY valid JSON.
+Use weather when the user asks for
+current weather.
+
+Required arguments:
+- task
+- type
+- city
+- depends_on
+
+Example:
+
+{
+    "task": "Get the current weather in Chennai",
+    "type": "weather",
+    "city": "Chennai",
+    "depends_on": []
+}
+
+
+3. calculation
+
+Use calculation for mathematical calculations.
+
+Required arguments:
+- task
+- type
+- expression
+- depends_on
+
+Example:
+
+{
+    "task": "Calculate 25 multiplied by 4",
+    "type": "calculation",
+    "expression": "25 * 4",
+    "depends_on": []
+}
+
+
+IMPORTANT:
+
+- Always include all required arguments.
+- For weather tasks, ALWAYS include "city".
+- For calculation tasks, ALWAYS include "expression".
+- For research tasks, no additional argument is required.
+- Use an empty list [] for depends_on when the task has no dependencies.
+- Return ONLY valid JSON.
+- Do not include explanations outside the JSON.
+
+Return the tasks inside a "tasks" array.
 
 Example:
 
 {
     "tasks": [
         {
-            "task": "Research what artificial intelligence is",
+            "task": "Research the differences between AI and ML",
             "type": "research",
             "depends_on": []
         },
         {
-            "task": "Calculate 2 multiplied by 3",
-            "type": "calculation",
-            "expression": "2 * 3",
+            "task": "Get the current weather in Chennai",
+            "type": "weather",
+            "city": "Chennai",
             "depends_on": []
         }
     ]
@@ -75,18 +123,18 @@ Example:
                 "content": question,
             },
         ],
-        response_format={
-            "type": "json_object"
-        },
+        response_format={"type": "json_object"},
         max_tokens=800,
     )
 
-    data = json.loads(response.choices[0].message.content)
+    data = json.loads(
+        response.choices[0].message.content
+    )
 
     return [
         {
             **task,
-            "status": "pending",
+            "status": "pending"
         }
         for task in data["tasks"]
     ]
@@ -104,7 +152,6 @@ def get_ready_tasks(plan):
         ):
             continue
 
-        # Don't retry beyond limit
         if (
             task["status"] == "failed"
             and task.get("retries", 0)
@@ -118,13 +165,11 @@ def get_ready_tasks(plan):
         )
 
         dependencies_complete = all(
-            plan[dependency]["status"]
-            == "complete"
+            plan[dependency]["status"] == "complete"
             for dependency in dependencies
         )
 
         if dependencies_complete:
-
             ready.append(task)
 
     return ready
