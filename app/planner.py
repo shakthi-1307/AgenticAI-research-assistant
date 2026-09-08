@@ -5,10 +5,94 @@ from groq import Groq
 from .config import GROQ_API_KEY, MODEL
 
 
-client = Groq(api_key=GROQ_API_KEY)
+client = Groq(
+    api_key=GROQ_API_KEY
+)
 
 
 def create_plan(question):
+
+    system_prompt = """
+You are a task planner for an Agentic AI system.
+
+Break the user's request into executable tasks.
+
+Available task types:
+
+RESEARCH
+{
+  "type": "research",
+  "task": "research question",
+  "depends_on": []
+}
+
+WEATHER
+{
+  "type": "weather",
+  "task": "get weather",
+  "city": "Chennai",
+  "depends_on": []
+}
+
+CALCULATION
+{
+  "type": "calculation",
+  "task": "perform calculation",
+  "expression": "10 / 2",
+  "depends_on": []
+}
+
+DEPENDENCIES:
+
+depends_on contains task indexes.
+
+Indexes start at 0.
+
+Example:
+
+Task 0:
+Find India's population.
+
+Task 1:
+Find China's population.
+
+Task 2:
+Compare India's and China's populations.
+
+Task 2:
+"depends_on": [0, 1]
+
+Task 3:
+Calculate the percentage difference using
+the populations from Tasks 0 and 1.
+
+Task 3:
+"depends_on": [0, 1]
+
+IMPORTANT:
+
+- Independent tasks should use [].
+- A task should depend on another task when it
+  needs that task's result.
+- Only reference earlier task indexes.
+- Keep tasks simple and executable.
+- Do not create unnecessary tasks.
+- Return ONLY JSON.
+- Do not use markdown.
+- Do not include explanations outside the JSON.
+
+The output MUST have exactly this structure:
+
+{
+  "tasks": [
+    {
+      "type": "research",
+      "task": "...",
+      "depends_on": []
+    }
+  ]
+}
+"""
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -16,144 +100,8 @@ def create_plan(question):
         messages=[
             {
                 "role": "system",
-                "content": """
-You are a task planner for an Agentic AI research system.
-
-Your job is to break the user's request into
-clear executable tasks.
-
-Available task types:
-
-1. research
-   Used for finding and investigating information.
-
-   Required fields:
-   {
-       "type": "research",
-       "task": "what needs to be researched",
-       "depends_on": []
-   }
-
-
-2. weather
-   Used for getting current weather.
-
-   Required fields:
-   {
-       "type": "weather",
-       "task": "get weather for Chennai",
-       "city": "Chennai",
-       "depends_on": []
-   }
-
-
-3. calculation
-   Used for mathematical calculations.
-
-   Required fields:
-   {
-       "type": "calculation",
-       "task": "calculate something",
-       "expression": "10 / 2",
-       "depends_on": []
-   }
-
-
-DEPENDENCIES:
-
-Use "depends_on" when a task needs the
-result of another task.
-
-The value must contain the INDEX of the
-previous task.
-
-Example:
-
-Task 0:
-Research the population of Chennai.
-
-Task 1:
-Convert the Chennai population into millions.
-
-Task 1 should have:
-
-"depends_on": [0]
-
-
-IMPORTANT:
-
-- depends_on controls both execution order
-  and information flow.
-- A task should depend on another task if it
-  needs information produced by that task.
-- Independent tasks should have [].
-- Do not create unnecessary dependencies.
-- Dependencies must refer to earlier tasks.
-- Use task indexes starting from 0.
-- Break complex requests into logical steps.
-- Keep tasks specific and executable.
-
-Examples:
-
-User:
-"Compare the populations of India and China."
-
-Possible plan:
-
-{
-    "tasks": [
-        {
-            "type": "research",
-            "task": "Find the current population of India.",
-            "depends_on": []
-        },
-        {
-            "type": "research",
-            "task": "Find the current population of China.",
-            "depends_on": []
-        }
-    ]
-}
-
-
-User:
-"Find India's population and calculate it in millions."
-
-Possible plan:
-
-{
-    "tasks": [
-        {
-            "type": "research",
-            "task": "Find India's current population.",
-            "depends_on": []
-        },
-        {
-            "type": "calculation",
-            "task": "Convert India's population into millions.",
-            "expression": "POPULATION / 1000000",
-            "depends_on": [0]
-        }
-    ]
-}
-
-
-Return ONLY valid JSON.
-
-The JSON must have this structure:
-
-{
-    "tasks": [
-        {
-            "type": "research | weather | calculation",
-            "task": "...",
-            "depends_on": []
-        }
-    ]
-}
-"""
+                "content": system_prompt
             },
-
             {
                 "role": "user",
                 "content": question
@@ -164,26 +112,107 @@ The JSON must have this structure:
             "type": "json_object"
         },
 
-        max_tokens=1000
+        max_tokens=800
     )
 
-    data = json.loads(
-        response.choices[0].message.content
+    raw_content = (
+        response
+        .choices[0]
+        .message
+        .content
     )
+
+    if not raw_content:
+
+        raise ValueError(
+            "Planner returned empty output."
+        )
+
+    try:
+
+        data = json.loads(
+            raw_content
+        )
+
+    except json.JSONDecodeError as error:
+
+        print(
+            "Planner returned invalid JSON:"
+        )
+
+        print(raw_content)
+
+        raise ValueError(
+            f"Planner JSON parsing failed: {error}"
+        )
+
+    if "tasks" not in data:
+
+        raise ValueError(
+            "Planner response does not contain "
+            "'tasks'."
+        )
 
     tasks = []
 
-    for task in data["tasks"]:
+    for index, task in enumerate(
+        data["tasks"]
+    ):
 
-        task["status"] = "pending"
-        task["retries"] = 0
-        task["max_retries"] = 2
+        if "type" not in task:
+            raise ValueError(
+                f"Task {index} has no type."
+            )
 
-        # Make sure depends_on exists
+        if "task" not in task:
+            raise ValueError(
+                f"Task {index} has no description."
+            )
+
         task["depends_on"] = task.get(
             "depends_on",
             []
         )
+
+        # ------------------------------------------
+        # Validate dependencies
+        # ------------------------------------------
+
+        for dependency in task["depends_on"]:
+
+            if not isinstance(
+                dependency,
+                int
+            ):
+
+                raise ValueError(
+                    f"Task {index} has an invalid "
+                    f"dependency: {dependency}"
+                )
+
+            if dependency >= index:
+
+                raise ValueError(
+                    f"Task {index} depends on "
+                    f"task {dependency}, but "
+                    "dependencies must reference "
+                    "earlier tasks."
+                )
+
+            if dependency < 0:
+
+                raise ValueError(
+                    f"Task {index} has an invalid "
+                    f"negative dependency."
+                )
+
+        # ------------------------------------------
+        # Add execution state
+        # ------------------------------------------
+
+        task["status"] = "pending"
+        task["retries"] = 0
+        task["max_retries"] = 2
 
         tasks.append(task)
 
@@ -215,7 +244,8 @@ def get_ready_tasks(plan):
         )
 
         dependencies_complete = all(
-            plan[dependency]["status"] == "complete"
+            plan[dependency]["status"]
+            == "complete"
             for dependency in dependencies
         )
 

@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 
 from .state import AgentState
 
@@ -7,7 +8,18 @@ from .state import AgentState
 CHECKPOINT_DIR = "checkpoints"
 
 
-def get_checkpoint_path():
+def create_run_id():
+    """
+    Create a unique ID for an agent execution.
+    """
+
+    return str(uuid.uuid4())
+
+
+def get_checkpoint_path(run_id):
+    """
+    Return the checkpoint file for a specific run.
+    """
 
     os.makedirs(
         CHECKPOINT_DIR,
@@ -16,15 +28,18 @@ def get_checkpoint_path():
 
     return os.path.join(
         CHECKPOINT_DIR,
-        "agent_state.json"
+        f"{run_id}.json"
     )
 
 
-def save_checkpoint(state):
+def save_checkpoint(state, run_id):
 
-    path = get_checkpoint_path()
+    path = get_checkpoint_path(
+        run_id
+    )
 
     checkpoint_data = {
+        "run_id": run_id,
         "question": state.question,
         "messages": state.messages,
         "plan": state.plan,
@@ -51,9 +66,11 @@ def save_checkpoint(state):
     )
 
 
-def load_checkpoint():
+def load_checkpoint(run_id):
 
-    path = get_checkpoint_path()
+    path = get_checkpoint_path(
+        run_id
+    )
 
     if not os.path.exists(path):
 
@@ -104,20 +121,23 @@ def load_checkpoint():
     except Exception as error:
 
         print(
-            f"Could not load checkpoint: {error}"
+            f"Could not load checkpoint: "
+            f"{error}"
         )
 
         return None
 
 
-def delete_checkpoint():
+def delete_checkpoint(run_id):
 
-    path = get_checkpoint_path()
+    path = get_checkpoint_path(
+        run_id
+    )
 
     if os.path.exists(path):
 
         os.remove(path)
 
         print(
-            "Checkpoint deleted."
+            f"Checkpoint deleted: {path}"
         )
