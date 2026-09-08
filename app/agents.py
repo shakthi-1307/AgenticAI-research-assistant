@@ -1,5 +1,4 @@
 import json
-from dataclasses import dataclass, field
 
 from groq import Groq
 
@@ -9,28 +8,19 @@ from .executor import execute_ready_tasks
 from .planner import (
     create_plan,
     get_ready_tasks,
-    all_tasks_complete,
+    all_tasks_complete
 )
+from .checkpoint import (
+    save_checkpoint,
+    load_checkpoint,
+    delete_checkpoint
+)
+from .state import AgentState
 
 
 client = Groq(api_key=GROQ_API_KEY)
 
 MAX_ITERATIONS = 5
-
-
-@dataclass
-class AgentState:
-
-    messages: list = field(default_factory=list)
-
-    plan: list = field(default_factory=list)
-
-    results: list = field(default_factory=list)
-
-    iteration: int = 0
-
-    final_answer: str | None = None
-
 
 def save_result(state, result):
 
@@ -82,39 +72,97 @@ Be concise and factual.
     return response.choices[0].message.content
 
 
-async def research(question: str):
+async def research(question):
 
-    state = AgentState(
-        messages=[
-            {
-                "role": "user",
-                "content": question,
-            }
-        ]
-    )
+    checkpoint_state = load_checkpoint()
 
-    # ---------------------------------------------
-    # Create task plan
-    # ---------------------------------------------
+    # --------------------------------------------------
+    # Check whether an existing checkpoint belongs
+    # to this question
+    # --------------------------------------------------
 
-    state.plan = create_plan(question)
-
-    print("\nPlan:")
-
-    for index, task in enumerate(
-        state.plan,
-        start=1,
+    if (
+        checkpoint_state is not None
+        and checkpoint_state.question.strip()
+        == question.strip()
     ):
 
+        state = checkpoint_state
+
         print(
-            f"{index}. "
-            f"{task['task']} "
-            f"[{task['status']}]"
+            "\nResuming from checkpoint..."
         )
 
-    # ---------------------------------------------
-    # Main agent loop
-    # ---------------------------------------------
+        print(
+            f"Previous iteration: "
+            f"{state.iteration}"
+        )
+
+        print(
+            "\nRestored plan:"
+        )
+
+        for index, task in enumerate(
+            state.plan
+        ):
+
+            print(
+                f"{index + 1}. "
+                f"{task['task']} "
+                f"[{task['status']}]"
+            )
+
+    else:
+
+        # ----------------------------------------------
+        # New question
+        # ----------------------------------------------
+
+        if checkpoint_state is not None:
+
+            print(
+                "\nExisting checkpoint belongs "
+                "to a different question."
+            )
+
+            print(
+                "Starting a new research session."
+            )
+
+            delete_checkpoint()
+
+        state = AgentState(
+            question=question,
+
+            messages=[
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ]
+        )
+
+        state.plan = create_plan(
+            question
+        )
+
+        print(
+            "\nPlan:"
+        )
+
+        for index, task in enumerate(
+            state.plan
+        ):
+
+            print(
+                f"{index + 1}. "
+                f"{task['task']} "
+                f"[{task['status']}]"
+            )
+
+    # --------------------------------------------------
+    # Execute tasks
+    # --------------------------------------------------
 
     while state.iteration < MAX_ITERATIONS:
 
@@ -130,15 +178,13 @@ async def research(question: str):
         )
 
         print(
-            f"Ready tasks: {len(ready_tasks)}"
+            f"Ready tasks: "
+            f"{len(ready_tasks)}"
         )
 
         if not ready_tasks:
-            break
 
-        # -----------------------------------------
-        # Execute ready tasks
-        # -----------------------------------------
+            break
 
         results = await execute_ready_tasks(
             ready_tasks,
@@ -150,11 +196,16 @@ async def research(question: str):
             task = item["task"]
             result = item["result"]
 
+            # ------------------------------------------
+            # Determine success
+            # ------------------------------------------
+
             if task["type"] == "research":
 
                 success = (
                     isinstance(result, dict)
-                    and result.get("status") == "complete"
+                    and result.get("status")
+                    == "complete"
                 )
 
             else:
@@ -164,25 +215,37 @@ async def research(question: str):
                     and "error" not in result
                 )
 
+            # ------------------------------------------
+            # Successful task
+            # ------------------------------------------
+
             if success:
 
                 task["status"] = "complete"
                 task["result"] = result
 
                 print(
-                    f"Task completed: {task['task']}"
+                    f"Task completed: "
+                    f"{task['task']}"
                 )
+
+            # ------------------------------------------
+            # Failed task
+            # ------------------------------------------
 
             else:
 
                 task["status"] = "failed"
+
                 task["retries"] = (
                     task.get("retries", 0) + 1
                 )
 
                 print(
-                    f"Task failed: {task['task']} "
-                    f"(retry {task['retries']})"
+                    f"Task failed: "
+                    f"{task['task']} "
+                    f"(retry "
+                    f"{task['retries']})"
                 )
 
             save_result(
@@ -190,41 +253,31 @@ async def research(question: str):
                 item
             )
 
-        # -----------------------------------------
-        # Show working memory
-        # -----------------------------------------
+        # ------------------------------------------
+        # Save checkpoint
+        # ------------------------------------------
 
-        print("\nWorking memory:")
-
-        print(
-            json.dumps(
-                state.results,
-                indent=2,
-            )
+        save_checkpoint(
+            state
         )
 
-        # -----------------------------------------
-        # Show updated plan
-        # -----------------------------------------
-
-        print("\nUpdated plan:")
+        print(
+            "\nUpdated plan:"
+        )
 
         for index, task in enumerate(
-            state.plan,
-            start=1,
+            state.plan
         ):
 
             print(
-                f"{index}. "
+                f"{index + 1}. "
                 f"{task['task']} "
-                f"[{task['status']}] "
-                f"(retries: "
-                f"{task.get('retries', 0)})"
+                f"[{task['status']}]"
             )
 
-        # -----------------------------------------
-        # Stop if everything completed
-        # -----------------------------------------
+        # ------------------------------------------
+        # Finished
+        # ------------------------------------------
 
         if all_tasks_complete(
             state.plan
@@ -234,21 +287,15 @@ async def research(question: str):
                 "\nAll tasks completed."
             )
 
-            break
+            state.final_answer = (
+                build_final_answer(state)
+            )
 
-    # ---------------------------------------------
-    # Generate final answer
-    # ---------------------------------------------
+            save_checkpoint(
+                state
+            )
 
-    if all_tasks_complete(
-        state.plan
-    ):
-
-        state.final_answer = (
-            build_final_answer(state)
-        )
-
-        return state.final_answer
+            return state.final_answer
 
     return (
         "I could not complete the research."
