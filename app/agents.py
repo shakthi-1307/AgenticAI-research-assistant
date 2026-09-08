@@ -1,15 +1,10 @@
 import json
-
 from groq import Groq
 
 from .config import GROQ_API_KEY, MODEL
 from .context import build_context
 from .executor import execute_ready_tasks
-from .planner import (
-    create_plan,
-    get_ready_tasks,
-    all_tasks_complete
-)
+from .planner import create_plan, get_ready_tasks, all_tasks_complete
 from .checkpoint import (
     create_run_id,
     save_checkpoint,
@@ -19,37 +14,59 @@ from .checkpoint import (
 from .state import AgentState
 
 
-client = Groq(
-    api_key=GROQ_API_KEY
-)
-
+client = Groq(api_key=GROQ_API_KEY)
 
 MAX_ITERATIONS = 5
 
 
 def save_result(state, result):
-
-    state.results.append(
-        {
-            "task": result["task"]["task"],
-            "type": result["task"]["type"],
-            "result": result["result"]
-        }
-    )
+    state.results.append({
+        "task": result["task"]["task"],
+        "type": result["task"]["type"],
+        "result": result["result"]
+    })
 
 
 def get_working_memory(state):
-
     return state.results
 
 
-def build_final_answer(state):
+def task_succeeded(task, result):
+    """
+    Decide whether a worker actually completed its task.
+    """
 
+    if not isinstance(result, dict):
+        return False
+
+    # Explicit worker failure
+    if result.get("status") == "failed":
+        return False
+
+    # Explicit error
+    if "error" in result:
+        return False
+
+    # Research workers must explicitly say complete
+    if task["type"] == "research":
+        return result.get("status") == "complete"
+
+    # Calculation workers must explicitly say complete
+    if task["type"] == "calculation":
+        return result.get("status") == "complete"
+
+    # Weather workers
+    if task["type"] == "weather":
+        return result.get("status") == "complete"
+
+    return False
+
+
+def build_final_answer(state):
     context = build_context(state)
 
     response = client.chat.completions.create(
         model=MODEL,
-
         messages=[
             {
                 "role": "system",
@@ -58,33 +75,25 @@ You are the final answer generator for an
 Agentic AI research system.
 
 Answer the user's original question using
-the information collected by the agent.
+only the information collected by the agent.
 
 Rules:
-
-- Use only the provided agent context.
-- Do not call tools.
+- Use only provided context.
 - Do not invent information.
-- Prefer factual and relevant information.
-- If the context contains estimates, clearly
-  identify them as estimates.
-- Keep the answer concise.
+- Identify estimates.
+- Be concise.
+- Do not use tools.
 """
             },
-
             {
                 "role": "user",
                 "content": (
-                    f"Original question:\n"
-                    f"{state.question}\n\n"
-                    f"Agent context:\n\n"
-                    f"{context}"
+                    f"Original question:\n{state.question}\n\n"
+                    f"Agent context:\n\n{context}"
                 )
             }
         ],
-
         tool_choice="none",
-
         max_tokens=1500
     )
 
@@ -93,85 +102,50 @@ Rules:
 
 async def research(question, run_id=None):
 
-    # --------------------------------------------------
-    # Create a run ID if this is a new execution
-    # --------------------------------------------------
-
     if run_id is None:
-
         run_id = create_run_id()
 
-    print(
-        f"\nRun ID: {run_id}"
-    )
+    print(f"\nRun ID: {run_id}")
 
-    # --------------------------------------------------
-    # Try to load an existing checkpoint
-    # --------------------------------------------------
+    checkpoint_state = load_checkpoint(run_id)
 
-    checkpoint_state = load_checkpoint(
-        run_id
-    )
-
-    # --------------------------------------------------
+    # ---------------------------------------------------------
     # Resume existing run
-    # --------------------------------------------------
+    # ---------------------------------------------------------
 
     if (
         checkpoint_state is not None
-        and checkpoint_state.question.strip()
-        == question.strip()
+        and checkpoint_state.question.strip() == question.strip()
     ):
-
         state = checkpoint_state
 
-        print(
-            "\nResuming from checkpoint..."
-        )
+        print("\nResuming from checkpoint...")
+        print(f"Previous iteration: {state.iteration}")
 
-        print(
-            f"Previous iteration: "
-            f"{state.iteration}"
-        )
+        print("\nRestored plan:")
 
-        print(
-            "\nRestored plan:"
-        )
-
-        for index, task in enumerate(
-            state.plan
-        ):
-
+        for index, task in enumerate(state.plan):
             print(
                 f"{index + 1}. "
                 f"{task['task']} "
                 f"[{task['status']}]"
             )
 
-    # --------------------------------------------------
-    # New run
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # Start new run
+    # ---------------------------------------------------------
 
     else:
 
         if checkpoint_state is not None:
 
-            print(
-                "\nCheckpoint belongs to "
-                "a different question."
-            )
+            print("\nCheckpoint belongs to a different question.")
+            print("Starting a new state.")
 
-            print(
-                "Starting a new state."
-            )
-
-            delete_checkpoint(
-                run_id
-            )
+            delete_checkpoint(run_id)
 
         state = AgentState(
             question=question,
-
             messages=[
                 {
                     "role": "user",
@@ -180,26 +154,13 @@ async def research(question, run_id=None):
             ]
         )
 
-        # --------------------------------------------------
-        # Create plan
-        # --------------------------------------------------
+        state.plan = create_plan(question)
 
-        state.plan = create_plan(
-            question
-        )
+        print("\nPlan:")
 
-        print(
-            "\nPlan:"
-        )
+        for index, task in enumerate(state.plan):
 
-        for index, task in enumerate(
-            state.plan
-        ):
-
-            dependencies = task.get(
-                "depends_on",
-                []
-            )
+            dependencies = task.get("depends_on", [])
 
             print(
                 f"{index + 1}. "
@@ -208,20 +169,15 @@ async def research(question, run_id=None):
             )
 
             if dependencies:
-
                 print(
-                    f"   depends_on: "
-                    f"{dependencies}"
+                    f"   depends_on: {dependencies}"
                 )
 
-    # --------------------------------------------------
-    # Main agent execution loop
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # Agent execution loop
+    # ---------------------------------------------------------
 
-    while (
-        state.iteration
-        < MAX_ITERATIONS
-    ):
+    while state.iteration < MAX_ITERATIONS:
 
         state.iteration += 1
 
@@ -230,80 +186,38 @@ async def research(question, run_id=None):
             f"{state.iteration} ---"
         )
 
-        # --------------------------------------------------
-        # Find tasks whose dependencies are complete
-        # --------------------------------------------------
-
-        ready_tasks = get_ready_tasks(
-            state.plan
-        )
+        ready_tasks = get_ready_tasks(state.plan)
 
         print(
-            f"Ready tasks: "
-            f"{len(ready_tasks)}"
+            f"Ready tasks: {len(ready_tasks)}"
         )
 
-        # --------------------------------------------------
-        # No tasks available
-        # --------------------------------------------------
-
         if not ready_tasks:
-
-            print(
-                "No ready tasks."
-            )
-
             break
 
-        # --------------------------------------------------
         # Execute independent tasks in parallel
-        # --------------------------------------------------
-
         results = await execute_ready_tasks(
             ready_tasks,
             state.plan
         )
 
-        # --------------------------------------------------
-        # Process task results
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # Process worker results
+        # -----------------------------------------------------
 
         for item in results:
 
             task = item["task"]
             result = item["result"]
 
-            # ----------------------------------------------
-            # Determine whether the task succeeded
-            # ----------------------------------------------
-
-            if task["type"] == "research":
-
-                success = (
-                    isinstance(result, dict)
-                    and result.get("status")
-                    == "complete"
-                )
-
-            else:
-
-                success = (
-                    isinstance(result, dict)
-                    and "error" not in result
-                )
-
-            # ----------------------------------------------
-            # Successful task
-            # ----------------------------------------------
+            success = task_succeeded(
+                task,
+                result
+            )
 
             if success:
 
                 task["status"] = "complete"
-
-                # Store the actual result inside
-                # the plan so dependent tasks can
-                # access it.
-
                 task["result"] = result
 
                 print(
@@ -311,51 +225,45 @@ async def research(question, run_id=None):
                     f"{task['task']}"
                 )
 
-            # ----------------------------------------------
-            # Failed task
-            # ----------------------------------------------
-
             else:
 
                 task["status"] = "failed"
 
                 task["retries"] = (
-                    task.get("retries", 0)
-                    + 1
+                    task.get("retries", 0) + 1
                 )
 
                 print(
                     f"Task failed: "
                     f"{task['task']} "
-                    f"(retry "
-                    f"{task['retries']})"
+                    f"(retry {task['retries']})"
                 )
 
-            # ----------------------------------------------
-            # Add result to working memory
-            # ----------------------------------------------
+                if isinstance(result, dict):
+                    print(
+                        f"   Error: "
+                        f"{result.get('error', result)}"
+                    )
 
             save_result(
                 state,
                 item
             )
 
-        # --------------------------------------------------
-        # Save checkpoint after the iteration
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # Save checkpoint
+        # -----------------------------------------------------
 
         save_checkpoint(
             state,
             run_id
         )
 
-        # --------------------------------------------------
-        # Display working memory
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # Working memory
+        # -----------------------------------------------------
 
-        print(
-            "\nWorking memory:"
-        )
+        print("\nWorking memory:")
 
         print(
             json.dumps(
@@ -365,17 +273,13 @@ async def research(question, run_id=None):
             )
         )
 
-        # --------------------------------------------------
-        # Display updated plan
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # Updated plan
+        # -----------------------------------------------------
 
-        print(
-            "\nUpdated plan:"
-        )
+        print("\nUpdated plan:")
 
-        for index, task in enumerate(
-            state.plan
-        ):
+        for index, task in enumerate(state.plan):
 
             print(
                 f"{index + 1}. "
@@ -385,29 +289,17 @@ async def research(question, run_id=None):
                 f"{task.get('retries', 0)})"
             )
 
-        # --------------------------------------------------
-        # Check whether everything is complete
-        # --------------------------------------------------
+        # -----------------------------------------------------
+        # Everything completed
+        # -----------------------------------------------------
 
-        if all_tasks_complete(
-            state.plan
-        ):
+        if all_tasks_complete(state.plan):
 
-            print(
-                "\nAll tasks completed."
+            print("\nAll tasks completed.")
+
+            state.final_answer = build_final_answer(
+                state
             )
-
-            # ----------------------------------------------
-            # Generate final answer
-            # ----------------------------------------------
-
-            state.final_answer = (
-                build_final_answer(state)
-            )
-
-            # ----------------------------------------------
-            # Save final state
-            # ----------------------------------------------
 
             save_checkpoint(
                 state,
@@ -416,23 +308,17 @@ async def research(question, run_id=None):
 
             return state.final_answer
 
-    # --------------------------------------------------
-    # Agent could not finish
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # Could not finish
+    # ---------------------------------------------------------
 
     print(
-        "\nAgent could not complete "
-        "all tasks."
+        "\nAgent could not complete all tasks."
     )
-
-    # Save the unfinished state so it can
-    # potentially be resumed later.
 
     save_checkpoint(
         state,
         run_id
     )
 
-    return (
-        "I could not complete the research."
-    )
+    return "I could not complete the research."
