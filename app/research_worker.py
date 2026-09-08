@@ -10,14 +10,14 @@ from .summarizer import summarize_content
 client = Groq(api_key=GROQ_API_KEY)
 
 MAX_STEPS = 6
-MAX_TOOL_RESULT_CHARS = 12000
+MAX_TOOL_RESULT_CHARS = 8000
+MAX_MESSAGES = 8
 
 
 def prepare_tool_result(result):
     """
-    Convert a tool result to JSON and prevent
-    extremely large results from entering the
-    LLM context.
+    Convert tool result to JSON and limit its size
+    before adding it to the LLM context.
     """
 
     content = json.dumps(
@@ -42,10 +42,6 @@ def prepare_tool_result(result):
 
 
 def build_dependency_context(dependency_results):
-    """
-    Convert results from previous tasks into
-    context that can be given to the research worker.
-    """
 
     if not dependency_results:
         return ""
@@ -60,7 +56,34 @@ def build_dependency_context(dependency_results):
     )
 
 
-async def research_task(task, dependency_results=None):
+def trim_messages(messages):
+    """
+    Keep the system prompt, original user task,
+    and only the most recent conversation messages.
+
+    This prevents the LLM context from growing
+    indefinitely.
+    """
+
+    if len(messages) <= MAX_MESSAGES:
+        return messages
+
+    system_message = messages[0]
+    user_message = messages[1]
+
+    recent_messages = messages[-(MAX_MESSAGES - 2):]
+
+    return [
+        system_message,
+        user_message,
+        *recent_messages
+    ]
+
+
+async def research_task(
+    task,
+    dependency_results=None
+):
 
     dependency_results = dependency_results or []
 
@@ -105,38 +128,29 @@ IMPORTANT TOOL ARGUMENT RULES:
 - calculator MUST use {"expression": "..."}
 - get_weather MUST use {"city": "..."}
 - Never use "id", "results", "search_results",
-  "input", or any other argument name.
-- Always follow the exact argument schema.
+  "input", or other incorrect argument names.
 
 RESEARCH PROCESS:
 
 1. Understand the research question.
-2. Check whether previous task results are available.
-3. Use previous results when they are relevant.
-4. Search the web when more information is needed.
-5. Fetch useful pages when detailed information
-   is required.
-6. Evaluate the information you have collected.
-7. Search again only when:
-   - important information is missing,
-   - sources conflict,
-   - or stronger evidence is needed.
-8. Stop researching once you have enough reliable
-   information to answer the question.
+2. Check previous task results.
+3. Use previous results when relevant.
+4. Search when information is missing.
+5. Fetch useful pages when necessary.
+6. Evaluate the evidence.
+7. Search again only when necessary.
+8. Stop when enough evidence has been collected.
 
-Do NOT continue searching simply because another
-step is available.
+Do NOT continue searching simply because
+another step is available.
 
-The maximum number of research steps is a
-safety limit, not a target.
+The maximum number of steps is a safety limit,
+not a target.
 
-When you have enough information, stop using tools
-and provide a concise factual answer.
+When enough information is available, stop using
+tools and provide the answer.
 
 Do not invent facts.
-
-When previous task results are provided, treat them
-as useful context, but verify them when necessary.
 """
         },
 
@@ -158,6 +172,12 @@ as useful context, but verify them when necessary.
             f"\nResearch worker step {step}"
         )
 
+        # ----------------------------------------------
+        # Prevent context from growing indefinitely
+        # ----------------------------------------------
+
+        messages = trim_messages(messages)
+
         try:
 
             response = client.chat.completions.create(
@@ -165,7 +185,7 @@ as useful context, but verify them when necessary.
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
-                max_tokens=1200,
+                max_tokens=800,
             )
 
         except Exception as error:
@@ -181,9 +201,9 @@ as useful context, but verify them when necessary.
 
         message = response.choices[0].message
 
-        # --------------------------------------------------
-        # Agent decided that it has enough information
-        # --------------------------------------------------
+        # ----------------------------------------------
+        # Worker has enough information
+        # ----------------------------------------------
 
         if not message.tool_calls:
 
@@ -192,9 +212,9 @@ as useful context, but verify them when necessary.
                 "answer": message.content or ""
             }
 
-        # --------------------------------------------------
-        # Execute tool calls
-        # --------------------------------------------------
+        # ----------------------------------------------
+        # Process tool calls
+        # ----------------------------------------------
 
         for tool_call in message.tool_calls:
 
@@ -215,7 +235,7 @@ as useful context, but verify them when necessary.
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": message.content or "",
+                        "content": message.content or ""
                     }
                 )
 
@@ -223,10 +243,10 @@ as useful context, but verify them when necessary.
                     {
                         "role": "user",
                         "content": (
-                            f"The tool arguments for {name} "
+                            f"The arguments for {name} "
                             "were invalid JSON. "
-                            "Please retry using valid JSON "
-                            "and the exact required schema."
+                            "Retry using the exact "
+                            "tool schema."
                         )
                     }
                 )
@@ -241,9 +261,9 @@ as useful context, but verify them when necessary.
                 f"Arguments: {arguments}"
             )
 
-            # --------------------------------------------------
+            # ------------------------------------------
             # Prevent duplicate searches
-            # --------------------------------------------------
+            # ------------------------------------------
 
             if name == "web_search":
 
@@ -253,16 +273,6 @@ as useful context, but verify them when necessary.
 
                     print(
                         "web_search called without query"
-                    )
-
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "web_search requires the "
-                                'argument {"query": "..."}'
-                            )
-                        }
                     )
 
                     continue
@@ -283,9 +293,9 @@ as useful context, but verify them when necessary.
                     normalized_query
                 )
 
-            # --------------------------------------------------
+            # ------------------------------------------
             # Prevent duplicate page fetches
-            # --------------------------------------------------
+            # ------------------------------------------
 
             if name == "fetch_page":
 
@@ -295,16 +305,6 @@ as useful context, but verify them when necessary.
 
                     print(
                         "fetch_page called without URL"
-                    )
-
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "fetch_page requires the "
-                                'argument {"url": "..."}'
-                            )
-                        }
                     )
 
                     continue
@@ -319,9 +319,9 @@ as useful context, but verify them when necessary.
 
                 used_urls.add(url)
 
-            # --------------------------------------------------
+            # ------------------------------------------
             # Execute tool
-            # --------------------------------------------------
+            # ------------------------------------------
 
             try:
 
@@ -338,13 +338,14 @@ as useful context, but verify them when necessary.
 
                 result = {
                     "error": (
-                        f"Tool execution failed: {error}"
+                        f"Tool execution failed: "
+                        f"{error}"
                     )
                 }
 
-            # --------------------------------------------------
-            # Summarize fetched webpages
-            # --------------------------------------------------
+            # ------------------------------------------
+            # Summarize webpage
+            # ------------------------------------------
 
             if (
                 name == "fetch_page"
@@ -370,22 +371,17 @@ as useful context, but verify them when necessary.
 
                 except Exception as error:
 
-                    print(
-                        f"Could not summarize webpage: "
-                        f"{error}"
-                    )
-
                     result = {
                         "url": result.get("url"),
                         "error": (
-                            "Could not summarize webpage: "
-                            f"{error}"
+                            "Could not summarize "
+                            f"webpage: {error}"
                         )
                     }
 
-            # --------------------------------------------------
-            # Add assistant tool call to conversation
-            # --------------------------------------------------
+            # ------------------------------------------
+            # Add assistant tool call
+            # ------------------------------------------
 
             messages.append(
                 {
@@ -406,9 +402,9 @@ as useful context, but verify them when necessary.
                 }
             )
 
-            # --------------------------------------------------
-            # Add tool result to conversation
-            # --------------------------------------------------
+            # ------------------------------------------
+            # Add tool result
+            # ------------------------------------------
 
             messages.append(
                 {
@@ -420,9 +416,9 @@ as useful context, but verify them when necessary.
                 }
             )
 
-    # ------------------------------------------------------
-    # Maximum step limit reached
-    # ------------------------------------------------------
+    # ----------------------------------------------
+    # Maximum steps reached
+    # ----------------------------------------------
 
     print(
         "Research worker reached maximum steps."
