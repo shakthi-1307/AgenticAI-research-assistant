@@ -1,13 +1,9 @@
 import json
 
-from groq import Groq
-
-from .config import GROQ_API_KEY, MODEL
+from .llm import call_llm
 from .tools import TOOLS, execute_tool_async
 from .summarizer import summarize_content
 
-
-client = Groq(api_key=GROQ_API_KEY)
 
 MAX_STEPS = 6
 MAX_TOOL_RESULT_CHARS = 8000
@@ -16,8 +12,9 @@ MAX_MESSAGES = 8
 
 def prepare_tool_result(result):
     """
-    Convert tool result to JSON and limit its size
-    before adding it to the LLM context.
+    Convert a tool result into a string and
+    prevent excessively large results from
+    entering the LLM context.
     """
 
     content = json.dumps(
@@ -28,9 +25,8 @@ def prepare_tool_result(result):
     if len(content) > MAX_TOOL_RESULT_CHARS:
 
         print(
-            f"Tool result too large "
-            f"({len(content)} chars). "
-            f"Truncating to {MAX_TOOL_RESULT_CHARS}."
+            "Tool result too large. "
+            "Truncating before sending to LLM."
         )
 
         content = (
@@ -60,9 +56,6 @@ def trim_messages(messages):
     """
     Keep the system prompt, original user task,
     and only the most recent conversation messages.
-
-    This prevents the LLM context from growing
-    indefinitely.
     """
 
     if len(messages) <= MAX_MESSAGES:
@@ -71,7 +64,9 @@ def trim_messages(messages):
     system_message = messages[0]
     user_message = messages[1]
 
-    recent_messages = messages[-(MAX_MESSAGES - 2):]
+    recent_messages = messages[
+        -(MAX_MESSAGES - 2):
+    ]
 
     return [
         system_message,
@@ -93,105 +88,126 @@ async def research_task(
         dependency_results
     )
 
+    # ---------------------------------------------------------
+    # Initial research context
+    # ---------------------------------------------------------
+
     messages = [
 
         {
             "role": "system",
             "content": """
-You are an autonomous research worker.
+You are an autonomous research worker
+inside an Agentic AI system.
 
-Your job is to investigate the assigned research
-question using the available tools.
+Your job is to research the assigned task
+using the available tools.
 
-Available tools:
+Available tools include:
 
-1. web_search
-Arguments:
-{"query": "search query"}
+- web_search
+- fetch_page
+- calculator
+- get_weather
 
-2. fetch_page
-Arguments:
-{"url": "webpage URL"}
+Research process:
 
-3. calculator
-Arguments:
-{"expression": "mathematical expression"}
+1. Understand the research task.
+2. Decide what information is needed.
+3. Use web_search to find relevant sources.
+4. Use fetch_page when a source needs to be examined.
+5. Analyze the tool results.
+6. Continue researching if important information
+   is still missing.
+7. Stop when you have enough reliable information.
+8. Return a concise evidence-based answer.
 
-4. get_weather
-Arguments:
-{"city": "city name"}
+IMPORTANT TOOL ARGUMENTS:
 
-IMPORTANT TOOL ARGUMENT RULES:
+web_search:
+{
+  "query": "your search query"
+}
 
-- web_search MUST use {"query": "..."}
-- fetch_page MUST use {"url": "..."}
-- calculator MUST use {"expression": "..."}
-- get_weather MUST use {"city": "..."}
-- Never use "id", "results", "search_results",
-  "input", or other incorrect argument names.
+fetch_page:
+{
+  "url": "https://example.com"
+}
 
-RESEARCH PROCESS:
+calculator:
+{
+  "expression": "10 / 2"
+}
 
-1. Understand the research question.
-2. Check previous task results.
-3. Use previous results when relevant.
-4. Search when information is missing.
-5. Fetch useful pages when necessary.
-6. Evaluate the evidence.
-7. Search again only when necessary.
-8. Stop when enough evidence has been collected.
+get_weather:
+{
+  "city": "Chennai"
+}
 
-Do NOT continue searching simply because
-another step is available.
+Rules:
 
-The maximum number of steps is a safety limit,
-not a target.
-
-When enough information is available, stop using
-tools and provide the answer.
-
-Do not invent facts.
+- Use tools when they are useful.
+- Do not invent information.
+- Prefer reliable sources.
+- Do not repeatedly search for the exact same query.
+- Do not repeatedly fetch the same URL.
+- Stop researching when sufficient evidence exists.
+- Return a concise final answer.
 """
         },
 
         {
             "role": "user",
             "content": (
-                f"Research task:\n{question}"
+                f"Research task:\n"
+                f"{question}"
                 f"{dependency_context}"
             )
         }
     ]
 
+    # ---------------------------------------------------------
+    # Track previously used searches / URLs
+    # ---------------------------------------------------------
+
     used_search_queries = set()
     used_urls = set()
 
-    for step in range(1, MAX_STEPS + 1):
+    # ---------------------------------------------------------
+    # Agent loop
+    # ---------------------------------------------------------
+
+    for step in range(
+        1,
+        MAX_STEPS + 1
+    ):
 
         print(
             f"\nResearch worker step {step}"
         )
 
-        # ----------------------------------------------
-        # Prevent context from growing indefinitely
-        # ----------------------------------------------
+        messages = trim_messages(
+            messages
+        )
 
-        messages = trim_messages(messages)
+        # -----------------------------------------------------
+        # LLM decides what to do
+        # -----------------------------------------------------
 
         try:
 
-            response = client.chat.completions.create(
-                model=MODEL,
+            message = call_llm(
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
-                max_tokens=800,
+                max_tokens=800
             )
 
         except Exception as error:
 
             print(
-                f"Research worker LLM error: {error}"
+                f"Research worker LLM error: "
+                f"{error}"
             )
 
             return {
@@ -199,11 +215,9 @@ Do not invent facts.
                 "error": str(error)
             }
 
-        message = response.choices[0].message
-
-        # ----------------------------------------------
-        # Worker has enough information
-        # ----------------------------------------------
+        # -----------------------------------------------------
+        # No tool call → research is complete
+        # -----------------------------------------------------
 
         if not message.tool_calls:
 
@@ -212,13 +226,21 @@ Do not invent facts.
                 "answer": message.content or ""
             }
 
-        # ----------------------------------------------
+        # -----------------------------------------------------
         # Process tool calls
-        # ----------------------------------------------
+        # -----------------------------------------------------
 
         for tool_call in message.tool_calls:
 
-            name = tool_call.function.name
+            tool_name = tool_call.function.name
+
+            print(
+                f"Tool call: {tool_name}"
+            )
+
+            # -------------------------------------------------
+            # Parse arguments
+            # -------------------------------------------------
 
             try:
 
@@ -229,126 +251,113 @@ Do not invent facts.
             except json.JSONDecodeError:
 
                 print(
-                    f"Invalid JSON arguments for {name}"
+                    "Invalid tool arguments returned "
+                    "by the LLM."
                 )
 
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content or ""
-                    }
-                )
-
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"The arguments for {name} "
-                            "were invalid JSON. "
-                            "Retry using the exact "
-                            "tool schema."
-                        )
-                    }
-                )
+                messages.append({
+                    "role": "assistant",
+                    "content": (
+                        "The previous tool call contained "
+                        "invalid JSON arguments. "
+                        "Please provide valid arguments."
+                    )
+                })
 
                 continue
-
-            print(
-                f"Tool call: {name}"
-            )
 
             print(
                 f"Arguments: {arguments}"
             )
 
-            # ------------------------------------------
-            # Prevent duplicate searches
-            # ------------------------------------------
+            # -------------------------------------------------
+            # Duplicate search prevention
+            # -------------------------------------------------
 
-            if name == "web_search":
+            if tool_name == "web_search":
 
-                query = arguments.get("query")
+                query = arguments.get(
+                    "query",
+                    ""
+                ).strip().lower()
 
-                if not query:
-
-                    print(
-                        "web_search called without query"
-                    )
-
-                    continue
-
-                normalized_query = (
-                    query.strip().lower()
-                )
-
-                if normalized_query in used_search_queries:
+                if query in used_search_queries:
 
                     print(
-                        "Skipping duplicate search"
+                        "Skipping duplicate search."
                     )
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": (
+                            "This search query was already "
+                            "executed. Use the existing result "
+                            "or try a different query."
+                        )
+                    })
 
                     continue
 
                 used_search_queries.add(
-                    normalized_query
+                    query
                 )
 
-            # ------------------------------------------
-            # Prevent duplicate page fetches
-            # ------------------------------------------
+            # -------------------------------------------------
+            # Duplicate URL prevention
+            # -------------------------------------------------
 
-            if name == "fetch_page":
+            if tool_name == "fetch_page":
 
-                url = arguments.get("url")
-
-                if not url:
-
-                    print(
-                        "fetch_page called without URL"
-                    )
-
-                    continue
+                url = arguments.get(
+                    "url",
+                    ""
+                ).strip()
 
                 if url in used_urls:
 
                     print(
-                        "Skipping duplicate URL"
+                        "Skipping duplicate URL."
                     )
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": (
+                            "This URL was already fetched. "
+                            "Use the existing information."
+                        )
+                    })
 
                     continue
 
-                used_urls.add(url)
+                used_urls.add(
+                    url
+                )
 
-            # ------------------------------------------
+            # -------------------------------------------------
             # Execute tool
-            # ------------------------------------------
+            # -------------------------------------------------
 
             try:
 
                 result = await execute_tool_async(
-                    name,
+                    tool_name,
                     arguments
                 )
 
             except Exception as error:
 
-                print(
-                    f"Tool execution error: {error}"
-                )
-
                 result = {
-                    "error": (
-                        f"Tool execution failed: "
-                        f"{error}"
-                    )
+                    "error": str(error)
                 }
 
-            # ------------------------------------------
-            # Summarize webpage
-            # ------------------------------------------
+            # -------------------------------------------------
+            # Summarize webpage content
+            # -------------------------------------------------
 
             if (
-                name == "fetch_page"
+                tool_name == "fetch_page"
                 and isinstance(result, dict)
                 and "content" in result
             ):
@@ -360,8 +369,8 @@ Do not invent facts.
                 try:
 
                     summary = summarize_content(
-                        content=result["content"],
-                        question=question
+                        result["content"],
+                        question
                     )
 
                     result = {
@@ -372,57 +381,58 @@ Do not invent facts.
                 except Exception as error:
 
                     result = {
-                        "url": result.get("url"),
                         "error": (
-                            "Could not summarize "
-                            f"webpage: {error}"
+                            "Could not summarize webpage: "
+                            f"{error}"
                         )
                     }
 
-            # ------------------------------------------
-            # Add assistant tool call
-            # ------------------------------------------
+            # -------------------------------------------------
+            # Prepare tool result
+            # -------------------------------------------------
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": message.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": (
-                                    tool_call.function.arguments
-                                )
-                            }
+            tool_content = prepare_tool_result(
+                result
+            )
+
+            # -------------------------------------------------
+            # Add assistant tool-call message
+            # -------------------------------------------------
+
+            assistant_message = {
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(
+                                arguments
+                            )
                         }
-                    ]
-                }
-            )
-
-            # ------------------------------------------
-            # Add tool result
-            # ------------------------------------------
+                    }
+                ]
+            }
 
             messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": prepare_tool_result(
-                        result
-                    )
-                }
+                assistant_message
             )
 
-    # ----------------------------------------------
-    # Maximum steps reached
-    # ----------------------------------------------
+            # -------------------------------------------------
+            # Add tool result
+            # -------------------------------------------------
 
-    print(
-        "Research worker reached maximum steps."
-    )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": tool_content
+            })
+
+    # ---------------------------------------------------------
+    # Maximum research steps reached
+    # ---------------------------------------------------------
 
     return {
         "status": "max_steps",

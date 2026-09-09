@@ -1,0 +1,22 @@
+{
+  "run_id": "a758c43c-5b96-4dc6-ade9-e76e32ade4bc",
+  "question": "What is the current population of India?",
+  "messages": [],
+  "plan": [
+    {
+      "type": "research",
+      "task": "find current population of India",
+      "depends_on": [],
+      "status": "failed",
+      "retries": 2,
+      "max_retries": 2,
+      "result": {
+        "status": "failed",
+        "error": "Unknown task type: research"
+      }
+    }
+  ],
+  "results": [],
+  "iteration": 3,
+  "final_answer": null
+}

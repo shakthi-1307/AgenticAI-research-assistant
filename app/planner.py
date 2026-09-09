@@ -1,13 +1,6 @@
 import json
 
-from groq import Groq
-
-from .config import GROQ_API_KEY, MODEL
-
-
-client = Groq(
-    api_key=GROQ_API_KEY
-)
+from .llm import call_llm
 
 
 def create_plan(question):
@@ -50,38 +43,28 @@ Indexes start at 0.
 
 Example:
 
-Task 0:
-Find India's population.
+Task 0: Find India's population.
+Task 1: Find China's population.
+Task 2: Compare India's and China's populations.
+Task 2: "depends_on": [0, 1]
 
-Task 1:
-Find China's population.
-
-Task 2:
-Compare India's and China's populations.
-
-Task 2:
-"depends_on": [0, 1]
-
-Task 3:
-Calculate the percentage difference using
-the populations from Tasks 0 and 1.
-
-Task 3:
-"depends_on": [0, 1]
+Task 3: Calculate percentage difference using populations
+from Tasks 0 and 1.
+Task 3: "depends_on": [0, 1]
 
 IMPORTANT:
 
 - Independent tasks should use [].
-- A task should depend on another task when it
-  needs that task's result.
+- A task should depend on another task when it needs
+  that task's result.
 - Only reference earlier task indexes.
 - Keep tasks simple and executable.
 - Do not create unnecessary tasks.
 - Return ONLY JSON.
 - Do not use markdown.
-- Do not include explanations outside the JSON.
+- Do not include explanations outside JSON.
 
-The output MUST have exactly this structure:
+The output MUST have exactly:
 
 {
   "tasks": [
@@ -94,9 +77,7 @@ The output MUST have exactly this structure:
 }
 """
 
-    response = client.chat.completions.create(
-        model=MODEL,
-
+    message = call_llm(
         messages=[
             {
                 "role": "system",
@@ -107,66 +88,72 @@ The output MUST have exactly this structure:
                 "content": question
             }
         ],
-
         response_format={
             "type": "json_object"
         },
-
         max_tokens=800
     )
 
-    raw_content = (
-        response
-        .choices[0]
-        .message
-        .content
-    )
+    raw_content = message.content
 
     if not raw_content:
-
         raise ValueError(
             "Planner returned empty output."
         )
 
+    # ---------------------------------------------------------
+    # Parse planner JSON
+    # ---------------------------------------------------------
+
     try:
 
-        data = json.loads(
-            raw_content
-        )
+        data = json.loads(raw_content)
 
     except json.JSONDecodeError as error:
 
-        print(
-            "Planner returned invalid JSON:"
-        )
-
+        print("Planner returned invalid JSON:")
         print(raw_content)
 
         raise ValueError(
             f"Planner JSON parsing failed: {error}"
         )
 
+    # ---------------------------------------------------------
+    # Validate tasks
+    # ---------------------------------------------------------
+
     if "tasks" not in data:
 
         raise ValueError(
-            "Planner response does not contain "
-            "'tasks'."
+            "Planner response does not contain 'tasks'."
+        )
+
+    if not isinstance(data["tasks"], list):
+
+        raise ValueError(
+            "Planner 'tasks' must be a list."
         )
 
     tasks = []
 
-    for index, task in enumerate(
-        data["tasks"]
-    ):
+    for index, task in enumerate(data["tasks"]):
+
+        if not isinstance(task, dict):
+
+            raise ValueError(
+                f"Task {index} is not a valid object."
+            )
 
         if "type" not in task:
+
             raise ValueError(
                 f"Task {index} has no type."
             )
 
         if "task" not in task:
+
             raise ValueError(
-                f"Task {index} has no description."
+                f"Task {index} has no task description."
             )
 
         task["depends_on"] = task.get(
@@ -174,9 +161,18 @@ The output MUST have exactly this structure:
             []
         )
 
-        # ------------------------------------------
-        # Validate dependencies
-        # ------------------------------------------
+        if not isinstance(
+            task["depends_on"],
+            list
+        ):
+
+            raise ValueError(
+                f"Task {index} dependencies must be a list."
+            )
+
+        # -----------------------------------------------------
+        # Validate dependency indexes
+        # -----------------------------------------------------
 
         for dependency in task["depends_on"]:
 
@@ -187,28 +183,27 @@ The output MUST have exactly this structure:
 
                 raise ValueError(
                     f"Task {index} has an invalid "
-                    f"dependency: {dependency}"
-                )
-
-            if dependency >= index:
-
-                raise ValueError(
-                    f"Task {index} depends on "
-                    f"task {dependency}, but "
-                    "dependencies must reference "
-                    "earlier tasks."
+                    f"dependency index."
                 )
 
             if dependency < 0:
 
                 raise ValueError(
-                    f"Task {index} has an invalid "
-                    f"negative dependency."
+                    f"Task {index} has a negative "
+                    f"dependency index."
                 )
 
-        # ------------------------------------------
-        # Add execution state
-        # ------------------------------------------
+            if dependency >= index:
+
+                raise ValueError(
+                    f"Task {index} depends on task "
+                    f"{dependency}, but dependencies "
+                    f"must reference earlier tasks."
+                )
+
+        # -----------------------------------------------------
+        # Runtime state
+        # -----------------------------------------------------
 
         task["status"] = "pending"
         task["retries"] = 0
@@ -231,6 +226,7 @@ def get_ready_tasks(plan):
         ):
             continue
 
+        # Don't retry forever
         if (
             task["status"] == "failed"
             and task.get("retries", 0)
@@ -244,8 +240,7 @@ def get_ready_tasks(plan):
         )
 
         dependencies_complete = all(
-            plan[dependency]["status"]
-            == "complete"
+            plan[dependency]["status"] == "complete"
             for dependency in dependencies
         )
 
