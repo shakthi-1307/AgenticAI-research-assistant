@@ -1,21 +1,37 @@
 import json
-import os
 
-from .llm import call_llm
-from .planner import create_plan, get_ready_tasks, all_tasks_complete
+from .llm import (
+    call_llm,
+    get_llm_stats,
+    reset_llm_stats,
+)
+
+from .planner import (
+    create_plan,
+    get_ready_tasks,
+    all_tasks_complete,
+)
+
 from .executor import execute_ready_tasks
+
 from .state import AgentState
+
 from .checkpoint import (
     create_run_id,
     save_checkpoint,
     load_checkpoint,
     delete_checkpoint,
 )
+
 from .context import build_context
 
 
 MAX_ITERATIONS = 5
 
+
+# =========================================================
+# Working Memory
+# =========================================================
 
 def save_result(state, task, result):
     """
@@ -25,17 +41,21 @@ def save_result(state, task, result):
     state.results.append({
         "task": task["task"],
         "type": task["type"],
-        "result": result
+        "result": result,
     })
 
 
 def get_working_memory(state):
     """
-    Return the accumulated task results.
+    Return accumulated task results.
     """
 
     return state.results
 
+
+# =========================================================
+# Task Success
+# =========================================================
 
 def task_succeeded(task, result):
     """
@@ -53,6 +73,10 @@ def task_succeeded(task, result):
 
     return True
 
+
+# =========================================================
+# Final Answer
+# =========================================================
 
 def build_final_answer(state):
     """
@@ -73,6 +97,7 @@ Rules:
 - Directly answer the user's original question.
 - Combine information from the completed tasks.
 - Do not invent facts.
+- Do not make unsupported assumptions.
 - Do not mention internal agents, workers, checkpoints,
   task graphs, or implementation details unless relevant
   to the user's question.
@@ -94,41 +119,60 @@ Rules:
         messages=messages,
         tools=None,
         tool_choice="none",
-        max_tokens=1500
+        max_tokens=1500,
     )
 
     return message.content or ""
 
+
+# =========================================================
+# Main Research Orchestrator
+# =========================================================
 
 async def research(question, run_id=None):
     """
     Main orchestration loop.
 
     Responsibilities:
-    - Create or restore state
+    - Create or restore AgentState
     - Generate the plan
-    - Execute ready tasks
+    - Find ready tasks
+    - Execute tasks
     - Update task state
     - Handle retries
     - Save checkpoints
+    - Track LLM usage
     - Produce the final answer
     """
 
-    # ---------------------------------------------------------
-    # Create or restore run
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # Create or restore run ID
+    # -----------------------------------------------------
 
     if run_id is None:
         run_id = create_run_id()
 
+    # -----------------------------------------------------
+    # Load checkpoint
+    # -----------------------------------------------------
+
     checkpoint = load_checkpoint(run_id)
 
     if checkpoint:
+
         state = checkpoint
 
-        # Prevent accidentally resuming a different question.
+        # -------------------------------------------------
+        # Make sure checkpoint belongs to this question
+        # -------------------------------------------------
+
         if state.question != question:
-            print("Checkpoint question does not match current question.")
+
+            print(
+                "Checkpoint question does not match "
+                "current question."
+            )
+
             delete_checkpoint(run_id)
 
             state = AgentState(
@@ -136,93 +180,161 @@ async def research(question, run_id=None):
             )
 
     else:
+
         state = AgentState(
             question=question
         )
 
+    # -----------------------------------------------------
+    # Reset runtime LLM statistics
+    # -----------------------------------------------------
+
+    reset_llm_stats()
+
     print(f"\nRun ID: {run_id}")
 
-    # ---------------------------------------------------------
-    # Create plan if needed
-    # ---------------------------------------------------------
+    # =====================================================
+    # Planning
+    # =====================================================
 
     if not state.plan:
+
         print("\nCreating plan...")
 
         state.plan = create_plan(question)
 
-        save_checkpoint(state, run_id)
+        # Save initial plan
+        save_checkpoint(
+            state,
+            run_id
+        )
 
-    # ---------------------------------------------------------
-    # Main orchestration loop
-    # ---------------------------------------------------------
+    # =====================================================
+    # Main execution loop
+    # =====================================================
 
     while state.iteration < MAX_ITERATIONS:
 
         state.iteration += 1
 
         print(
-            f"\n=============================="
-            f"\nIteration {state.iteration}"
-            f"\n=============================="
+            "\n=============================="
         )
 
-        # -----------------------------------------------------
-        # Check whether everything is already complete
-        # -----------------------------------------------------
+        print(
+            f"Iteration {state.iteration}"
+        )
+
+        print(
+            "=============================="
+        )
+
+        # -------------------------------------------------
+        # Check if all tasks are complete
+        # -------------------------------------------------
 
         if all_tasks_complete(state.plan):
 
-            print("\nAll tasks completed.")
+            print(
+                "\nAll tasks completed."
+            )
 
-            state.final_answer = build_final_answer(state)
+            # -------------------------------------------------
+            # Final synthesis
+            # -------------------------------------------------
 
-            save_checkpoint(state, run_id)
+            state.final_answer = build_final_answer(
+                state
+            )
+
+            # Final synthesis also consumes tokens
+            state.llm_usage = get_llm_stats()
+
+            save_checkpoint(
+                state,
+                run_id
+            )
+
+            # -------------------------------------------------
+            # Display usage
+            # -------------------------------------------------
+
+            print("\nLLM usage:")
+
+            print(
+                json.dumps(
+                    state.llm_usage,
+                    indent=2
+                )
+            )
 
             return state.final_answer
 
-        # -----------------------------------------------------
+        # -------------------------------------------------
         # Find tasks whose dependencies are satisfied
-        # -----------------------------------------------------
+        # -------------------------------------------------
 
-        ready_tasks = get_ready_tasks(state.plan)
+        ready_tasks = get_ready_tasks(
+            state.plan
+        )
 
         if not ready_tasks:
 
-            print("\nNo tasks are currently ready.")
-
-            save_checkpoint(state, run_id)
-
-            return (
-                "Research could not continue because no executable "
-                "tasks were available."
+            print(
+                "\nNo tasks are currently ready."
             )
 
-        print(f"\nReady tasks: {len(ready_tasks)}")
+            state.llm_usage = get_llm_stats()
 
-        # -----------------------------------------------------
+            save_checkpoint(
+                state,
+                run_id
+            )
+
+            return (
+                "Research could not continue because "
+                "no executable tasks were available."
+            )
+
+        print(
+            f"\nReady tasks: {len(ready_tasks)}"
+        )
+
+        # =================================================
         # Execute ready tasks
-        # -----------------------------------------------------
+        # =================================================
 
         execution_results = await execute_ready_tasks(
             ready_tasks,
             state.plan
         )
 
-        # -----------------------------------------------------
-        # Commit execution results into AgentState
-        # -----------------------------------------------------
+        # -------------------------------------------------
+        # Update LLM usage
+        # -------------------------------------------------
+
+        state.llm_usage = get_llm_stats()
+
+        # =================================================
+        # Commit results into AgentState
+        # =================================================
 
         for execution in execution_results:
 
             task = execution["task"]
             result = execution["result"]
 
-            task_index = state.plan.index(task)
+            if task_succeeded(
+                task,
+                result
+            ):
 
-            if task_succeeded(task, result):
+                # -------------------------------------------------
+                # Successful task
+                # -------------------------------------------------
 
                 task["status"] = "complete"
+
                 task["result"] = result
 
                 save_result(
@@ -232,18 +344,27 @@ async def research(question, run_id=None):
                 )
 
                 print(
-                    f"Task completed: {task['task']}"
+                    f"Task completed: "
+                    f"{task['task']}"
                 )
 
             else:
 
+                # -------------------------------------------------
+                # Failed task
+                # -------------------------------------------------
+
                 task["status"] = "failed"
+
                 task["result"] = result
 
-                task["retries"] = task.get("retries", 0) + 1
+                task["retries"] = (
+                    task.get("retries", 0) + 1
+                )
 
                 print(
-                    f"Task failed: {task['task']}"
+                    f"Task failed: "
+                    f"{task['task']}"
                 )
 
                 print(
@@ -251,25 +372,35 @@ async def research(question, run_id=None):
                     f"{task.get('max_retries', 2)}"
                 )
 
-                # If retry limit has not been reached,
-                # get_ready_tasks() will allow it to run again.
-                if task["retries"] < task.get("max_retries", 2):
+                # -------------------------------------------------
+                # Retry if possible
+                # -------------------------------------------------
+
+                if task["retries"] < task.get(
+                    "max_retries",
+                    2
+                ):
+
                     task["status"] = "pending"
 
-        # -----------------------------------------------------
-        # Save checkpoint after this execution batch
-        # -----------------------------------------------------
+        # =================================================
+        # Save checkpoint
+        # =================================================
+
+        state.llm_usage = get_llm_stats()
 
         save_checkpoint(
             state,
             run_id
         )
 
-        # -----------------------------------------------------
+        # =================================================
         # Display working memory
-        # -----------------------------------------------------
+        # =================================================
 
-        print("\nWorking memory:")
+        print(
+            "\nWorking memory:"
+        )
 
         print(
             json.dumps(
@@ -279,11 +410,13 @@ async def research(question, run_id=None):
             )
         )
 
-        # -----------------------------------------------------
+        # =================================================
         # Display current plan
-        # -----------------------------------------------------
+        # =================================================
 
-        print("\nCurrent plan:")
+        print(
+            "\nCurrent plan:"
+        )
 
         print(
             json.dumps(
@@ -293,9 +426,26 @@ async def research(question, run_id=None):
             )
         )
 
-    # ---------------------------------------------------------
+        # =================================================
+        # Display LLM usage
+        # =================================================
+
+        print(
+            "\nLLM usage:"
+        )
+
+        print(
+            json.dumps(
+                state.llm_usage,
+                indent=2
+            )
+        )
+
+    # =====================================================
     # Maximum iterations reached
-    # ---------------------------------------------------------
+    # =====================================================
+
+    state.llm_usage = get_llm_stats()
 
     save_checkpoint(
         state,
@@ -303,6 +453,6 @@ async def research(question, run_id=None):
     )
 
     return (
-        "Research could not be completed within the maximum "
-        "number of iterations."
+        "Research could not be completed within "
+        "the maximum number of iterations."
     )
