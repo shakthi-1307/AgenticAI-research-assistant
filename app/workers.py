@@ -103,11 +103,13 @@ async def execute_worker(task, dependency_results=None):
                 "content": """
 You extract numerical values from research results.
 
-Return ONLY valid JSON in exactly this format:
+Return ONLY valid JSON.
+
+Required format:
 
 {
-  "value_a": number,
-  "value_b": number
+  "value_a": 0,
+  "value_b": 0
 }
 
 Rules:
@@ -115,8 +117,10 @@ Rules:
 - value_b must be the China population.
 - Use only numbers explicitly supported by the research results.
 - Do not include commas in numbers.
+- Do not include units.
 - Do not include explanations.
 - Do not include markdown.
+- Do not use scientific notation.
 """
             },
             {
@@ -133,24 +137,50 @@ Rules:
                 messages=messages,
                 tools=None,
                 tool_choice="none",
-                max_tokens=200
+                response_format={"type": "json_object"},
+                max_tokens=200,
+                component="calculation_worker"
             )
 
+            # -------------------------------------------------
+            # Validate LLM response
+            # -------------------------------------------------
+            if not message.content:
+                raise ValueError(
+                    "Calculation worker received an empty LLM response."
+                )
+
             extracted = json.loads(message.content)
+
+            if not isinstance(extracted, dict):
+                raise ValueError(
+                    "Calculation worker expected a JSON object."
+                )
 
             value_a = extracted.get("value_a")
             value_b = extracted.get("value_b")
 
+            # -------------------------------------------------
+            # Validate extracted values
+            # -------------------------------------------------
             if not isinstance(value_a, (int, float)):
-                raise ValueError("value_a is not numeric.")
+                raise ValueError(
+                    "value_a is not numeric."
+                )
 
             if not isinstance(value_b, (int, float)):
-                raise ValueError("value_b is not numeric.")
+                raise ValueError(
+                    "value_b is not numeric."
+                )
 
             if value_a <= 0 or value_b <= 0:
-                raise ValueError("Extracted values must be positive.")
+                raise ValueError(
+                    "Extracted population values must be positive."
+                )
 
-            # Deterministic calculation.
+            # -------------------------------------------------
+            # Deterministic calculation
+            # -------------------------------------------------
             calculation_expression = (
                 f"abs({value_a}-{value_b})/"
                 f"(({value_a}+{value_b})/2)*100"
@@ -158,7 +188,9 @@ Rules:
 
             result = await execute_tool_async(
                 "calculator",
-                {"expression": calculation_expression}
+                {
+                    "expression": calculation_expression
+                }
             )
 
             return {
@@ -167,6 +199,15 @@ Rules:
                 "value_b": value_b,
                 "expression": calculation_expression,
                 "result": result
+            }
+
+        except json.JSONDecodeError as error:
+            return {
+                "status": "failed",
+                "error": (
+                    "Calculation worker received invalid JSON "
+                    f"from the LLM: {error}"
+                )
             }
 
         except Exception as error:

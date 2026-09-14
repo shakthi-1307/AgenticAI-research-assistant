@@ -120,6 +120,7 @@ Rules:
         tools=None,
         tool_choice="none",
         max_tokens=1500,
+        component="final_synthesis"
     )
 
     return message.content or ""

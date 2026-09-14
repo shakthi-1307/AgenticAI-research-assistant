@@ -91,7 +91,8 @@ The output MUST have exactly:
         response_format={
             "type": "json_object"
         },
-        max_tokens=800
+        max_tokens=800,
+        component="planner"
     )
 
     raw_content = message.content
@@ -156,6 +157,10 @@ The output MUST have exactly:
                 f"Task {index} has no task description."
             )
 
+        # Normalize task type so the rest of the system
+        # receives a predictable value.
+        task["type"] = task["type"].lower()
+
         task["depends_on"] = task.get(
             "depends_on",
             []
@@ -206,7 +211,9 @@ The output MUST have exactly:
         # -----------------------------------------------------
 
         task["status"] = "pending"
+
         task["retries"] = 0
+
         task["max_retries"] = 2
 
         tasks.append(task)

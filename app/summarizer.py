@@ -44,6 +44,7 @@ Rules:
         tools=None,
         tool_choice="none",
         max_tokens=800,
+        component="summarizer"
     )
 
     return message.content or ""

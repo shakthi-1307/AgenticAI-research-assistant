@@ -1,0 +1,46 @@
+{
+  "run_id": "20f10946-2768-4751-8238-ef16e8decd08",
+  "question": "research about AWS and Vercel and Railway",
+  "messages": [],
+  "plan": [
+    {
+      "type": "research",
+      "task": "research AWS",
+      "depends_on": [],
+      "status": "failed",
+      "retries": 2,
+      "max_retries": 2,
+      "result": {
+        "status": "failed",
+        "error": "Error code: 400 - {'error': {'message': 'failed to template request: failed to render tokenized output: failed to render tokens with harmony: HarmonyError: EncodingError: Message=render failed: Tools should have a name!', 'type': 'invalid_request_error'}}"
+      }
+    },
+    {
+      "type": "research",
+      "task": "research Vercel",
+      "depends_on": [],
+      "status": "failed",
+      "retries": 2,
+      "max_retries": 2,
+      "result": {
+        "status": "max_steps",
+        "answer": "Research could not be completed within the maximum number of research steps."
+      }
+    },
+    {
+      "type": "research",
+      "task": "research Railway",
+      "depends_on": [],
+      "status": "failed",
+      "retries": 2,
+      "max_retries": 2,
+      "result": {
+        "status": "failed",
+        "error": "Request timed out."
+      }
+    }
+  ],
+  "results": [],
+  "iteration": 3,
+  "final_answer": null
+}
